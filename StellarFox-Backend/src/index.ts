@@ -1,0 +1,199 @@
+import express from "express";
+import pinoHttp from "pino-http";
+import { validateEnv } from "./config/env";
+// Validate environment variables first before importing anything else that uses them!
+const env = validateEnv();
+
+import { version } from '../package.json';
+
+import { createCorsMiddleware } from "./config/cors";
+import { setupSwagger } from "./config/swagger";
+import { errorMiddleware } from "./middleware/error.middleware";
+import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
+import { rateLimit } from "./middleware/rate-limit.middleware";
+import { requestLogging } from "./middleware/request-logging.middleware";
+import { AppError } from "./utils/AppError";
+import { logger } from "./utils/logger";
+import { pool } from "./config/db";
+import { redis } from "./config/redis";
+import authRouter from "./routes/auth.routes";
+import marketRouter from "./routes/market.routes";
+import governanceRouter from "./routes/governance.routes";
+import adminRouter from "./routes/admin.routes";
+import usersRouter from "./routes/users.routes";
+
+import engagementRouter from "./routes/engagement.routes";
+import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
+import claimsRouter from "./routes/bet.routes";
+import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { startCleanupCron } from "./cron/cleanup.cron";
+import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
+import { engagementService } from "./services/engagement.service";
+import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
+
+import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
+
+// Initialise Sentry before any other code (captures unhandled rejections/exceptions)
+initSentry(env.SENTRY_DSN, env.NODE_ENV);
+
+// Wire default production DbAdapter for MarketService
+setDbAdapter(defaultDbAdapter);
+
+const app = express();
+
+// CORS configuration - must be before other middleware
+app.use(createCorsMiddleware());
+
+// Middleware
+app.use(pinoHttp({ logger }));
+app.use(express.json());
+app.use(requestLogging);
+
+// Setup Swagger/OpenAPI documentation
+if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
+  setupSwagger(app);
+}
+
+// Prometheus metrics endpoint (internal only — no auth required)
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
+
+// HTTP request metrics middleware
+app.use((req, res, next) => {
+  const end = httpRequestDuration.startTimer();
+  res.on("finish", () => {
+    const route = req.route?.path || req.path;
+    const labels = { method: req.method, route, status_code: String(res.statusCode) };
+    end(labels);
+    httpRequestsTotal.inc(labels);
+  });
+  next();
+});
+
+// Routes
+app.get("/health", async (_req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    await redis.ping();
+    res.json({
+      status: "ok",
+      db: "connected",
+      redis: "connected",
+      version,
+      dbPool: {
+        totalCount: pool.totalCount,
+        idleCount: pool.idleCount,
+        waitingCount: pool.waitingCount,
+      },
+    });
+  } catch {
+    res.status(503).json({ status: "error" });
+  }
+});
+
+// Rate-limited route groups
+app.use("/auth", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" }));
+app.use("/api", rateLimit({ windowMs: 60_000, max: 60, keyBy: "ip" })); // Public endpoints
+app.use("/api/oracle", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" })); // Oracle endpoint stricter
+app.use("/api/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" })); // Admin endpoints
+app.use("/trading", rateLimit({ windowMs: 60_000, max: 60, keyBy: "userId" }));
+app.use(
+  "/wallet/withdraw",
+  rateLimit({ windowMs: 60_000, max: 5, keyBy: "userId" }),
+);
+
+app.use("/auth", authRouter);
+app.use("/api/markets", marketRouter);
+app.use("/api/governance", governanceRouter);
+app.use("/api/engagement", engagementRouter);
+app.use("/api/claims", claimsRouter);
+app.use("/api/bets", claimsRouter);
+app.get("/api/stats", getPlatformStats);
+app.get("/api/portfolio/:address", getPortfolio);
+app.use("/api/users", usersRouter);
+app.use("/api/admin", adminRouter);
+app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
+app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));
+
+// Example route that throws AppError
+app.get("/test-error", (_req, _res, next) => {
+  const error = AppError.notFound("Resource not found", undefined, { resource: "user" });
+  next(error);
+});
+
+// Example route with unhandled error
+app.get("/test-unhandled", (_req, _res) => {
+  throw new Error("Unexpected error occurred");
+});
+
+// Example route with validation error
+app.post("/api/users", (req, res, next) => {
+  if (!req.body.email) {
+    const error = AppError.badRequest("Validation error", undefined, {
+      field: "email",
+      reason: "Email is required",
+    });
+    return next(error);
+  }
+  res.json({ success: true });
+});
+
+// 404 handler - must be before error middleware
+app.use((_req, _res, next) => {
+  next(AppError.notFound("Route not found"));
+});
+
+// Sentry error handler - must be before errorMiddleware
+applySentryRequestHandler(app);
+
+// Error handler - must be LAST
+app.use(errorMiddleware);
+
+const PORT = env.PORT;
+const server = app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
+  if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
+    logger.info(`Swagger UI available at http://localhost:${PORT}/api/docs`);
+  }
+  startAutoResolutionCron();
+  startAutoLockCron();
+  startCleanupCron();
+});
+
+// Startup health check — catch misconfigured env vars or failed connections early
+(async function startupHealthCheck() {
+  const results: string[] = [];
+  try {
+    await pool.query("SELECT 1");
+    results.push("db: ok");
+  } catch (err) {
+    logger.error({ err }, "Startup health check FAILED — database unreachable");
+    results.push("db: FAILED");
+  }
+  try {
+    await redis.ping();
+    results.push("redis: ok");
+  } catch (err) {
+    logger.error({ err }, "Startup health check FAILED — redis unreachable");
+    results.push("redis: FAILED");
+  }
+  logger.info(`Startup health check — ${results.join(", ")}`);
+})();
+
+initActivityFeed(server);
+
+// Bridge engagement leaderboard rank changes onto the WebSocket layer so
+// subscribed clients get real-time rank updates (issues #516, #517).
+
+// subscribed clients get real-time rank updates.
+engagementService.setRankUpdateListener((updates) => {
+  try {
+    getActivityFeed().emitLeaderboardRankUpdate(updates);
+  } catch (err) {
+    logger.warn({ err }, "Failed to emit leaderboard rank update");
+  }
+});
+
+export default app;

@@ -1,0 +1,385 @@
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import * as authService from '../services/auth.service';
+import { AppError } from '../utils/AppError';
+import { validateBody } from '../api/middleware/validate';
+import { rateLimit } from '../middleware/rate-limit.middleware';
+import { requireAuth } from '../middleware/auth.middleware';
+
+const router = Router();
+
+/**
+ * @swagger
+ * tags:
+ *   name: Auth
+ *   description: Authentication and 2FA
+ */
+
+// ---------------------------------------------------------------------------
+// Zod schemas for request validation
+// ---------------------------------------------------------------------------
+const otpSchema = z.object({
+  otp: z.string().min(1),
+});
+
+const verifySchema = z.object({
+  tempToken: z.string().min(1),
+  otp: z.string().min(1),
+});
+
+// ---------------------------------------------------------------------------
+// POST /auth/login
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Login with email and password
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Access token (or tempToken if 2FA enabled)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 accessToken:
+ *                   type: string
+ *                 tempToken:
+ *                   type: string
+ *       400:
+ *         description: Missing credentials
+ *       401:
+ *         description: Invalid credentials
+ */
+router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) throw new AppError(400, 'Email and password required');
+    const result = await authService.login(email, password);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /auth/refresh
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/refresh:
+ *   post:
+ *     summary: Exchange a refresh token for a new access token
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [refreshToken]
+ *             properties:
+ *               refreshToken:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: New access token
+ *       401:
+ *         description: Invalid, expired, or revoked refresh token
+ */
+router.post('/refresh', validateBody(refreshBody), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await authService.refreshAccessToken(req.body.refreshToken);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /auth/logout
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/logout:
+ *   post:
+ *     summary: Revoke a refresh token server-side
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [refreshToken]
+ *             properties:
+ *               refreshToken:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Refresh token revoked
+ */
+router.post('/logout', validateBody(logoutBody), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await authService.logout(req.body.refreshToken);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /auth/forgot-password
+// Stricter rate limit: 5 requests per 15 minutes per IP
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     summary: Request a password reset email
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *     responses:
+ *       200:
+ *         description: Reset link sent (always, to avoid email enumeration)
+ */
+router.post(
+  '/forgot-password',
+  rateLimit({ windowMs: 15 * 60_000, max: 5, keyBy: 'ip' }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== 'string') {
+        throw new AppError(400, 'Email is required');
+      }
+
+      // Always fire-and-forget — never reveal whether the email exists
+      await authService.forgotPassword(email.trim().toLowerCase());
+
+      res.json({ message: 'If that email exists, a reset link has been sent.' });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /auth/reset-password
+// Stricter rate limit: 10 attempts per 15 minutes per IP
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Reset password using a reset token
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token, newPassword]
+ *             properties:
+ *               token:
+ *                 type: string
+ *               newPassword:
+ *                 type: string
+ *                 minLength: 8
+ *     responses:
+ *       200:
+ *         description: Password updated
+ *       400:
+ *         description: Invalid or expired token
+ */
+router.post(
+  '/reset-password',
+  rateLimit({ windowMs: 15 * 60_000, max: 10, keyBy: 'ip' }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token, newPassword } = req.body;
+
+      if (!token || typeof token !== 'string') {
+        throw new AppError(400, 'Reset token is required');
+      }
+      if (!newPassword || typeof newPassword !== 'string') {
+        throw new AppError(400, 'New password is required');
+      }
+      if (newPassword.length < 8) {
+        throw new AppError(400, 'Password must be at least 8 characters');
+      }
+
+      await authService.resetPassword(token, newPassword);
+
+      res.json({ message: 'Password updated successfully. Please log in again.' });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 2FA routes
+// ---------------------------------------------------------------------------
+/**
+ * @swagger
+ * /auth/2fa/setup:
+ *   post:
+ *     summary: Generate a TOTP secret and QR code for 2FA setup
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: TOTP secret and QR code URI
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 secret:
+ *                   type: string
+ *                 qrCodeUrl:
+ *                   type: string
+ *       401:
+ *         description: Unauthorized
+ */
+router.post('/2fa/setup', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await authService.setup2FA((req as unknown as Record<string, unknown>).userId as string);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/enable:
+ *   post:
+ *     summary: Enable 2FA after verifying the TOTP code
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [otp]
+ *             properties:
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: 2FA enabled
+ *       401:
+ *         description: Unauthorized or invalid OTP
+ */
+router.post('/2fa/enable', requireAuth, validateBody(otpSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await authService.enable2FA((req as unknown as Record<string, unknown>).userId as string, req.body.otp);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/disable:
+ *   post:
+ *     summary: Disable 2FA
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [otp]
+ *             properties:
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: 2FA disabled
+ *       401:
+ *         description: Unauthorized or invalid OTP
+ */
+router.post('/2fa/disable', requireAuth, validateBody(otpSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await authService.disable2FA((req as unknown as Record<string, unknown>).userId as string, req.body.otp);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/verify:
+ *   post:
+ *     summary: Complete login by verifying 2FA OTP
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [tempToken, otp]
+ *             properties:
+ *               tempToken:
+ *                 type: string
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Access token issued
+ *       401:
+ *         description: Invalid temp token or OTP
+ */
+router.post(
+  '/2fa/verify',
+  rateLimit({ windowMs: 15 * 60_000, max: 5, keyBy: 'ip' }),
+  validateBody(verifySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await authService.verify2FA(req.body.tempToken, req.body.otp);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+export default router;
