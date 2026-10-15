@@ -119,6 +119,52 @@ jobs:
           DATABASE_URL: postgresql://bankerchanger:bankerchanger@localhost:5432/bankerchanger
           REDIS_URL: redis://localhost:6379
 
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run npm audit (JSON report)
+        working-directory: backend
+        run: |
+          mkdir -p ../vulnerability-reports
+          npm audit --json > ../vulnerability-reports/npm-audit.json || true
+          npm audit --audit-level=critical
+
+      - name: Run Snyk dependency scan
+        working-directory: backend
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "SNYK_TOKEN not configured; skipping Snyk scan."
+            exit 0
+          fi
+          npx --yes snyk@latest test --all-projects --severity-threshold=critical \
+            --json-file-output=../vulnerability-reports/snyk-report.json || true
+          npx --yes snyk@latest test --all-projects --severity-threshold=critical
+
+      - name: Upload vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnerability-reports
+          path: vulnerability-reports/
+          if-no-files-found: ignore
+
   load-test:
     name: k6 WebSocket Load Test
     runs-on: ubuntu-latest
