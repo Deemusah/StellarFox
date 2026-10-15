@@ -1,112 +1,75 @@
-# BANKERCHANGER
+# StellarFox
 
-Decentralized boxing-only prediction market built on Stellar Soroban.
+StellarFox is a decentralized application platform built on the Stellar network.
 
-## Stack
+## Infrastructure as Code
 
-| Layer | Technology |
-|---|---|
-| Smart Contracts | Rust / Soroban (Stellar) |
-| Backend | Node.js / TypeScript |
-| Frontend | Next.js 14 / TypeScript / Tailwind CSS |
-| Database | PostgreSQL 15 |
-| Cache | Redis 7 |
-| Wallet | Freighter / Albedo |
+All infrastructure for StellarFox is defined as code using [Terraform](https://www.terraform.io/).
+This makes environments reproducible: the same configuration can be provisioned consistently
+across development, staging, and production.
 
-## Project Structure
+### Layout
 
 ```
-contracts/    Soroban smart contracts (MarketFactory, Market, Treasury)
-backend/      Indexer + REST API
-frontend/     Next.js web app
-docs/         Architecture and API documentation
+infra/
+  terraform/
+    main.tf          # Provider configuration and shared locals
+    variables.tf     # Input variables (documented, with defaults)
+    outputs.tf       # Values exposed after provisioning
+    network.tf       # Networking resources
+    compute.tf       # Application compute resources
+    database.tf      # Managed database resources
+    storage.tf       # Object storage resources
+    terraform.tfvars.example  # Example variable values
 ```
 
-## Quick Start
+### Prerequisites
+
+- Terraform >= 1.5.0
+- Credentials for the target cloud provider, supplied via environment variables
+  (never committed to the repository)
+
+### Usage
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/bankerchanger.git && cd bankerchanger
+cd infra/terraform
 
-# 2. Set up environment files
-cp backend/.env.example backend/.env
-cp indexer/.env.example indexer/.env
-cp frontend/.env.example frontend/.env
-# Edit .env files with your configuration
+# Initialize providers and modules
+terraform init
 
-# 3. Start all services with one command
-docker compose up
+# Review the execution plan
+terraform plan -var-file=terraform.tfvars
 
-# The full stack is now running:
-# - PostgreSQL:  localhost:5432
-# - Redis:       localhost:6379
-# - Indexer:     localhost:3002
-# - Backend API: localhost:3001
-# - Frontend:    localhost:3000
+# Provision the infrastructure
+terraform apply -var-file=terraform.tfvars
+
+# Tear down when no longer needed
+terraform destroy -var-file=terraform.tfvars
 ```
 
-### Development Mode (Local)
+Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in environment-specific
+values before running `plan` or `apply`. The `terraform.tfvars` file is git-ignored.
 
-If you prefer to run services locally without Docker:
+### Reproducibility
+
+Because every resource is declared in code, environments can be recreated from scratch
+by running `terraform apply` against a fresh state. Remote state is configured so that
+multiple operators share a single source of truth.
+
+### Testing
+
+Infrastructure changes are validated in CI:
 
 ```bash
-# 1. Start only infrastructure services
-docker compose up postgres redis
-
-# 2. Backend (in separate terminal)
-cd backend && npm install && npm run dev
-
-# 3. Indexer (in separate terminal)
-cd indexer && npm install && npm run dev
-
-# 4. Frontend (in separate terminal)
-cd frontend && npm install && npm run dev
+cd infra/terraform
+terraform fmt -check
+terraform init -backend=false
+terraform validate
 ```
 
-## Contract Deployment
+These checks run on every pull request that touches `infra/terraform/**` and fail the
+build if the configuration is malformed or not reproducible.
 
-Requires [Rust](https://rustup.rs/) and the [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli).
+## Development
 
-```bash
-cd contracts
-
-# Build optimized WASM for all contracts
-cargo build --workspace
-# or: stellar contract build
-
-# Deploy to Testnet
-export ADMIN_SECRET_KEY=S...          # your Stellar secret key
-export ORACLE_ADDRESSES=G...,G...     # optional: comma-separated oracle addresses
-export DEFAULT_FEE_BPS=200            # optional: platform fee (default 200 = 2%)
-./scripts/deploy.sh testnet
-```
-
-Deployed addresses are saved to `contracts/deployments.json`:
-
-```json
-{
-  "network": "testnet",
-  "deployedAt": "2025-01-01T00:00:00Z",
-  "contracts": {
-    "treasury":      { "address": "C..." },
-    "marketFactory": { "address": "C...", "defaultFeeBps": 200 },
-    "market":        { "wasmHash": "abc123..." }
-  },
-  "admin": "G..."
-}
-```
-
-Deployment order: `shared` (build only) → `treasury` → `market_factory` → `market` (wasm upload).
-
-## Documentation
-
-- **[Getting Started Guide](docs/GETTING_STARTED.md)** — Complete setup guide with Docker
-- [Contributing Guidelines](docs/contributing.md)
-- [Architecture Overview](docs/architecture.md) — System diagram, data flows, sequence diagrams
-- [API Rate Limits](docs/api-rate-limits.md) — Rate limit values, headers, client best practices
-- [Observability Guide](docs/observability.md) — Prometheus metric names, alerting, logging
-- [Operational Runbook](docs/runbook.md) — Incident response procedures for production
-
-## License
-
-MIT
+See the individual package READMEs for application-level setup instructions.
