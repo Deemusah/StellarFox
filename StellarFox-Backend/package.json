@@ -26,6 +26,12 @@
     "test:e2e": "jest --passWithNoTests --runInBand --testPathPatterns=tests/e2e"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.52.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
+    "@opentelemetry/resources": "^1.28.0",
+    "@opentelemetry/sdk-node": "^0.55.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
     "@sentry/node": "10.68.0",
     "@types/bcrypt": "^6.0.0",
     "@types/nodemailer": "^8.0.0",
