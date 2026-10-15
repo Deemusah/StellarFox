@@ -12,5 +12,9 @@
         "diagnostics": false
       }
     ]
-  }
+  },
+  "collectCoverageFrom": [
+    "src/**/*.ts",
+    "!src/**/*.d.ts"
+  ]
 }
