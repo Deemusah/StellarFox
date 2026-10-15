@@ -106,6 +106,8 @@ Deployment order: `shared` (build only) → `treasury` → `market_factory` → 
 - [API Rate Limits](docs/api-rate-limits.md) — Rate limit values, headers, client best practices
 - [Observability Guide](docs/observability.md) — Prometheus metric names, alerting, logging
 - [Operational Runbook](docs/runbook.md) — Incident response procedures for production
+- [Deployment Guide](docs/deployment-guide.md) — Instructions for deploying with Docker Compose
+- [Troubleshooting Guide](docs/troubleshooting-guide.md) — Common issues and resolution steps
 
 ## License
 
