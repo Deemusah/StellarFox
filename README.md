@@ -110,3 +110,8 @@ Deployment order: `shared` (build only) → `treasury` → `market_factory` → 
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-111 -->
+- #111: Implement Notification Center
