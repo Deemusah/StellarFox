@@ -47,6 +47,8 @@ module.exports = {
         ...sharedModuleNameMapper,
         '^msw$': '<rootDir>/node_modules/msw/lib/core/index.js',
         '^msw/node$': '<rootDir>/node_modules/msw/lib/node/index.js',
+        '^rettime$': '<rootDir>/src/__tests__/mocks/rettime.js',
+        '^@open-draft/deferred-promise$': '<rootDir>/src/__tests__/mocks/deferred-promise.js',
       },
       setupFiles: ['<rootDir>/src/__tests__/fetchPolyfill.js'],
       setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],

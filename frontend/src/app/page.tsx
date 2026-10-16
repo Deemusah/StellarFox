@@ -1,17 +1,18 @@
 // ============================================================
 // BANKERCHANGER — Home Page (/)
-// Lists all boxing markets with filters, sorting, and pagination.
+// Lists all boxing markets with filters, sorting, and infinite scroll.
 // ============================================================
 
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useMarkets } from '../hooks/useMarkets';
+import { useInfiniteMarkets } from '../hooks/useInfiniteMarkets';
 import { MarketCard } from '../components/market/MarketCard';
 import { MarketCardSkeleton } from '../components/market/MarketCardSkeleton';
 import { StatsBanner } from '../components/ui/StatsBanner';
 import { MarketFilters } from '../components/market/MarketFilters';
+import { ScrollSentinel } from '../components/ui/ScrollSentinel';
 
 const LIMIT = 12;
 
@@ -22,7 +23,6 @@ export default function HomePage(): JSX.Element {
   const weightClass = searchParams.get('weight_class') ?? 'All Weight Classes';
   const status = searchParams.get('status') ?? 'All';
   const sort = searchParams.get('sort') ?? 'date_desc';
-  const page = Number(searchParams.get('page') ?? '1');
 
   const setParam = useCallback(
     (key: string, value: string | null) => {
@@ -32,23 +32,30 @@ export default function HomePage(): JSX.Element {
       } else {
         params.set(key, value);
       }
-      // Reset to page 1 on filter/sort change
-      if (key !== 'page') params.delete('page');
       router.replace(`?${params.toString()}`);
     },
     [router, searchParams],
   );
 
-  const { markets, total, isLoading, error } = useMarkets(
-    {
-      weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
-      status: status === 'All' ? undefined : status.toLowerCase(),
-      sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
-    },
-    { page, limit: LIMIT },
-  );
+  const filters = {
+    weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+    status: status === 'All' ? undefined : status.toLowerCase(),
+    sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
+  };
 
-  const totalPages = Math.ceil(total / LIMIT);
+  const { markets, total, isLoading, isFetchingMore, hasMore, loadMore, error, reset } =
+    useInfiniteMarkets(filters, LIMIT);
+
+  // Reset accumulated data whenever filters change so the list restarts.
+  const prevFiltersRef = useRef(JSON.stringify(filters));
+  useEffect(() => {
+    const key = JSON.stringify(filters);
+    if (key !== prevFiltersRef.current) {
+      prevFiltersRef.current = key;
+      reset();
+    }
+  });
+
   const showSkeleton = isLoading && markets.length === 0;
 
   return (
@@ -83,43 +90,35 @@ export default function HomePage(): JSX.Element {
       {/* Market grid */}
       {showSkeleton ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 12 }).map((_, i) => (
+          {Array.from({ length: LIMIT }).map((_, i) => (
             <MarketCardSkeleton key={i} />
           ))}
         </div>
-      ) : markets.length === 0 ? (
+      ) : markets.length === 0 && !isLoading ? (
         <p className="text-gray-500 text-center py-16">
           No markets found. Try changing your filters.
         </p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {markets.map((m) => (
-            <MarketCard key={m.market_id} market={m} />
-          ))}
-        </div>
-      )}
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {markets.map((m) => (
+              <MarketCard key={m.market_id} market={m} />
+            ))}
+            {/* Skeleton cards appended while fetching more (fills the row) */}
+            {isFetchingMore &&
+              Array.from({ length: 3 }).map((_, i) => (
+                <MarketCardSkeleton key={`skeleton-more-${i}`} />
+              ))}
+          </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-4 pt-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => setParam('page', String(page - 1))}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white disabled:opacity-40 hover:bg-gray-700 disabled:cursor-not-allowed"
-          >
-            ← Prev
-          </button>
-          <span className="text-gray-400 text-sm">
-            {page} / {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => setParam('page', String(page + 1))}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white disabled:opacity-40 hover:bg-gray-700 disabled:cursor-not-allowed"
-          >
-            Next →
-          </button>
-        </div>
+          {/* Scroll sentinel — triggers loadMore and shows spinner/end message */}
+          <ScrollSentinel
+            onLoadMore={loadMore}
+            hasMore={hasMore}
+            isLoading={isFetchingMore}
+            endMessage={`All ${total} markets loaded`}
+          />
+        </>
       )}
     </main>
   );
