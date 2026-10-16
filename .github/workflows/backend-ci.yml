@@ -4,9 +4,13 @@ on:
   push:
     paths:
       - 'backend/**'
+      - 'monitoring/**'
+      - 'docker-compose*.yml'
   pull_request:
     paths:
       - 'backend/**'
+      - 'monitoring/**'
+      - 'docker-compose*.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

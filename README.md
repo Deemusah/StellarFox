@@ -19,6 +19,7 @@ Decentralized boxing-only prediction market built on Stellar Soroban.
 contracts/    Soroban smart contracts (MarketFactory, Market, Treasury)
 backend/      Indexer + REST API
 frontend/     Next.js web app
+monitoring/   Prometheus + Alertmanager + Grafana configuration
 docs/         Architecture and API documentation
 ```
 
@@ -62,6 +63,23 @@ cd indexer && npm install && npm run dev
 # 4. Frontend (in separate terminal)
 cd frontend && npm install && npm run dev
 ```
+
+### Monitoring & Alerting (optional)
+
+Prometheus, Alertmanager and Grafana live in [`monitoring/`](monitoring) and start alongside the app:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+
+# Prometheus   http://localhost:9090
+# Alertmanager http://localhost:9093
+# Grafana      http://localhost:3003  (admin / admin)
+```
+
+Metrics are scraped from the backend `/metrics` endpoint every 15s, alerting
+rules fire on the thresholds defined in `monitoring/prometheus/rules/`, and the
+dashboards are provisioned into Grafana automatically. See the
+[Observability Guide](docs/observability.md) for the full alert catalogue.
 
 ## Contract Deployment
 
