@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { MarketSearchAutocomplete } from './MarketSearchAutocomplete';
 
 export type SortOption = 'newest' | 'ending_soon' | 'biggest_pool';
 
@@ -60,7 +61,6 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   const [searchInput, setSearchInput] = useState(searchParam);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusTabsRef = useRef<HTMLDivElement>(null);
-
   const setParam = useCallback(
     (updates: Record<string, string | null>) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -83,10 +83,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
 
   const handleSearchChange = (value: string) => {
     setSearchInput(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setParam({ search: value || null });
-    }, 300);
+    setParam({ search: value || null });
   };
 
   useEffect(() => {
@@ -153,14 +150,11 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         ))}
       </div>
 
-      {/* Fighter name search */}
-      <input
-        type="search"
+      {/* Fighter name search — autocomplete */}
+      <MarketSearchAutocomplete
         value={searchInput}
-        onChange={(e) => handleSearchChange(e.target.value)}
+        onCommit={handleSearchChange}
         placeholder="Search fighters…"
-        aria-label="Search fighters"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 w-48"
       />
 
       {/* Sort dropdown */}
