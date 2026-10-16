@@ -71,3 +71,105 @@ jobs:
           name: deployments-testnet
           path: contracts/deployments.json
           retention-days: 90
+
+  tls:
+    name: Provision & Verify TLS Certificates
+    runs-on: ubuntu-latest
+    environment: testnet
+    needs: deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          if [ -z "$KUBE_CONFIG" ]; then
+            echo "::error::KUBE_CONFIG secret is not set; cannot manage TLS certificates"
+            exit 1
+          fi
+          mkdir -p "$HOME/.kube"
+          echo "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Install cert-manager
+        run: |
+          CERT_MANAGER_VERSION='v1.15.3'
+          kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
+          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
+          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
+
+      - name: Apply Let's Encrypt ClusterIssuer
+        env:
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+        run: |
+          if [ -z "$ACME_EMAIL" ]; then
+            echo "::error::ACME_EMAIL secret is not set; cannot register with Let's Encrypt"
+            exit 1
+          fi
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: ${ACME_EMAIL}
+              privateKeySecretRef:
+                name: letsencrypt-prod-account-key
+              solvers:
+                - http01:
+                    ingress:
+                      class: nginx
+          EOF
+
+      - name: Apply Certificate with automatic rotation
+        env:
+          TLS_HOST: ${{ vars.TLS_HOST || 'testnet.stellarforge.example' }}
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: stellarforge-testnet-tls
+            namespace: default
+          spec:
+            secretName: stellarforge-testnet-tls
+            duration: 2160h
+            renewBefore: 720h
+            privateKey:
+              algorithm: ECDSA
+              size: 256
+              rotationPolicy: Always
+            dnsNames:
+              - ${TLS_HOST}
+            issuerRef:
+              name: letsencrypt-prod
+              kind: ClusterIssuer
+          EOF
+
+      - name: Wait for certificate to become Ready
+        run: |
+          kubectl wait --for=condition=Ready certificate/stellarforge-testnet-tls \
+            --namespace default --timeout=300s
+
+      - name: Verify certificate automation
+        run: |
+          set -euo pipefail
+          echo 'Checking Certificate status conditions...'
+          kubectl get certificate stellarforge-testnet-tls -n default -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' | grep -q True
+          echo 'Checking renewal window is configured...'
+          RENEW_BEFORE=$(kubectl get certificate stellarforge-testnet-tls -n default -o jsonpath='{.spec.renewBefore}')
+          test -n "$RENEW_BEFORE"
+          echo 'Checking private key rotation policy...'
+          ROTATION=$(kubectl get certificate stellarforge-testnet-tls -n default -o jsonpath='{.spec.privateKey.rotationPolicy}')
+          test "$ROTATION" = 'Always'
+          echo 'Checking issued secret exists...'
+          kubectl get secret stellarforge-testnet-tls -n default
+          echo 'TLS certificate automation verified.'
