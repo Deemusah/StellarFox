@@ -278,6 +278,46 @@ pub struct ClaimReceipt {
     pub claimed_at: u64,
 }
 
+/// Collateral and virtual share reserves for an optional three-outcome AMM.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmPool {
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub reserve_draw: i128,
+    /// Collateral supplied by LPs and traders, less collateral paid out on sells.
+    pub collateral: i128,
+    /// Sum of outcome shares currently held by traders.
+    pub outstanding_shares: i128,
+    pub outstanding_a: i128,
+    pub outstanding_b: i128,
+    pub outstanding_draw: i128,
+}
+
+/// Outcome-share balances and net collateral contributed by one AMM trader.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmPosition {
+    pub market_id: u64,
+    pub shares_a: i128,
+    pub shares_b: i128,
+    pub shares_draw: i128,
+    /// Buys add collateral and sells subtract it; may be negative after profitable sells.
+    pub net_collateral: i128,
+    pub claimed: bool,
+}
+
+/// A liquidity provider's ownership of the market AMM.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiquidityPosition {
+    pub provider: Address,
+    pub market_id: u64,
+    pub lp_shares: i128,
+    pub fee_debt: i128,
+    pub entered_at: u64,
+}
+
 // ─── Treasury Audit Trail ─────────────────────────────────────────────────────
 
 /// The type of fund-moving operation recorded in the treasury audit ledger.

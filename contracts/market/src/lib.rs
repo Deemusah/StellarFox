@@ -19,10 +19,10 @@ use soroban_sdk::{
 use boxmeout_shared::{
     errors::ContractError,
     types::{
-        BetRecord, BetSide, ClaimReceipt, Config, FightDetails, LiquidityPosition, MarketConfig,
-        MarketState, MarketStatus, OptionalMarketTier, OptionalOracleRole, OptionalOutcome,
-        OracleReport, OracleRole, Outcome, VersionedOutcome, CURRENT_OUTCOME_VERSION,
-        LEGACY_OUTCOME_VERSION,
+        AmmPool, AmmPosition, BetRecord, BetSide, ClaimReceipt, Config, FightDetails,
+        LiquidityPosition, MarketConfig, MarketState, MarketStatus, OptionalMarketTier,
+        OptionalOracleRole, OptionalOutcome, OracleReport, OracleRole, Outcome, VersionedOutcome,
+        CURRENT_OUTCOME_VERSION, LEGACY_OUTCOME_VERSION,
     },
 };
 
@@ -60,6 +60,14 @@ const LP_TOTAL_SHARES: &str = "LP_TOTAL_SHARES";
 const LP_PREFIX: &str       = "LP";
 /// Accumulated fee-per-LP-share in micro-units (scaled by 1_000_000)
 const LP_FEE_PER_SHARE: &str = "LP_FEE_PER_SHARE";
+/// Optional AMM reserves and collateral, separate from legacy pari-mutuel pools.
+const AMM_POOL: &str = "AMM_POOL";
+/// Prefix for per-trader AMM outcome-share positions.
+const AMM_POSITION_PREFIX: &str = "AMM_POSITION";
+/// Aggregate net deposits refundable if the market is cancelled.
+const AMM_REFUND_LIABILITY: &str = "AMM_REFUND_LIABILITY";
+/// Trader positions which still require settlement.
+const AMM_ACTIVE_TRADERS: &str = "AMM_ACTIVE_TRADERS";
 /// Seed liquidity minimum — 1 XLM per pool side
 const MIN_SEED_LIQUIDITY: i128 = 10_000_000;
 
@@ -210,6 +218,18 @@ impl Market {
                 .persistent()
                 .extend_ttl(&VERSIONED_OUTCOME, MAX_TTL, MAX_TTL);
         }
+        for key in [
+            LP_TOTAL_SHARES,
+            LP_FEE_PER_SHARE,
+            AMM_REFUND_LIABILITY,
+            AMM_ACTIVE_TRADERS,
+        ] {
+            if env.storage().persistent().has(&key) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, MAX_TTL, MAX_TTL);
+            }
+        }
     }
 
     fn lp_key(env: &Env, provider: &Address) -> (Symbol, Address) {
@@ -230,6 +250,43 @@ impl Market {
     fn remove_lp_position(env: &Env, provider: &Address) {
         let key = Self::lp_key(env, provider);
         env.storage().persistent().remove(&key);
+    }
+
+    fn load_amm_pool(env: &Env) -> Option<AmmPool> {
+        env.storage().persistent().get(&AMM_POOL)
+    }
+
+    fn save_amm_pool(env: &Env, pool: &AmmPool) {
+        env.storage().persistent().set(&AMM_POOL, pool);
+        env.storage()
+            .persistent()
+            .extend_ttl(&AMM_POOL, MAX_TTL, MAX_TTL);
+    }
+
+    fn amm_position_key(env: &Env, trader: &Address) -> (Symbol, Address) {
+        (Symbol::new(env, AMM_POSITION_PREFIX), trader.clone())
+    }
+
+    fn load_amm_position(env: &Env, trader: &Address) -> Option<AmmPosition> {
+        env.storage()
+            .persistent()
+            .get(&Self::amm_position_key(env, trader))
+    }
+
+    fn save_amm_position(env: &Env, trader: &Address, position: &AmmPosition) {
+        let key = Self::amm_position_key(env, trader);
+        env.storage().persistent().set(&key, position);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MAX_TTL, MAX_TTL);
+    }
+
+    fn amm_side(side: &BetSide) -> u8 {
+        match side {
+            BetSide::FighterA => 0,
+            BetSide::FighterB => 1,
+            BetSide::Draw => 2,
+        }
     }
 }
 
@@ -566,9 +623,9 @@ impl Market {
     // =========================================================================
     /// Seeds or adds liquidity to the three-way AMM pool.
     ///
-    /// The provider supplies equal-value collateral for all three outcome sides.
-    /// LP shares are minted proportional to the provider's contribution relative
-    /// to the existing pool size.
+    /// The first deposit seeds the three outcome reserves and establishes initial
+    /// prices. Later deposits must be proportional to current reserve balances.
+    /// LP shares represent a proportional claim on AMM collateral.
     ///
     /// # Errors
     /// - `MarketNotOpen`: Market is not accepting liquidity
@@ -588,13 +645,17 @@ impl Market {
         token: Address,
         min_lp_shares_out: i128,
     ) -> Result<LiquidityPosition, ContractError> {
-        // ── CHECKS ────────────────────────────────────────────────────────────
         provider.require_auth();
         Self::require_not_paused(&env)?;
-
-        let mut state = Self::load_state(&env)?;
+        let state = Self::load_state(&env)?;
         if state.status != MarketStatus::Open {
             return Err(ContractError::MarketNotOpen);
+        }
+        if amount_a <= 0 || amount_b <= 0 || amount_draw <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if min_lp_shares_out < 0 {
+            return Err(ContractError::InvalidAmount);
         }
 
         let normalized_a = boxmeout_shared::math::normalize_token_amount(
@@ -617,7 +678,6 @@ impl Market {
             .and_then(|v| v.checked_add(amount_draw))
             .ok_or(ContractError::InsufficientAmount)?;
 
-        // All three sides must meet the one-token seed minimum.
         if normalized_a < MIN_SEED_LIQUIDITY
             || normalized_b < MIN_SEED_LIQUIDITY
             || normalized_draw < MIN_SEED_LIQUIDITY
@@ -630,57 +690,97 @@ impl Market {
             .and_then(|v| v.checked_add(normalized_draw))
             .ok_or(ContractError::InsufficientAmount)?;
 
-        // Compute LP shares to mint
-        let total_shares: i128 = env.storage().persistent()
+        let mut pool = Self::load_amm_pool(&env).unwrap_or(AmmPool {
+            reserve_a: 0,
+            reserve_b: 0,
+            reserve_draw: 0,
+            collateral: 0,
+            outstanding_shares: 0,
+            outstanding_a: 0,
+            outstanding_b: 0,
+            outstanding_draw: 0,
+        });
+        let total_shares: i128 = env
+            .storage()
+            .persistent()
             .get(&LP_TOTAL_SHARES)
             .unwrap_or(0);
-        let fee_per_share: i128 = env.storage().persistent()
+        let fee_per_share: i128 = env
+            .storage()
+            .persistent()
             .get(&LP_FEE_PER_SHARE)
             .unwrap_or(0);
 
-        let lp_shares = if total_shares == 0 || state.total_pool == 0 {
-            // First liquidity: mint shares equal to total input (1:1 seed)
+        if total_shares > 0 {
+            let a_over_b = normalized_a
+                .checked_mul(pool.reserve_b)
+                .ok_or(ContractError::InsufficientAmount)?;
+            let b_over_a = normalized_b
+                .checked_mul(pool.reserve_a)
+                .ok_or(ContractError::InsufficientAmount)?;
+            let a_over_draw = normalized_a
+                .checked_mul(pool.reserve_draw)
+                .ok_or(ContractError::InsufficientAmount)?;
+            let draw_over_a = normalized_draw
+                .checked_mul(pool.reserve_a)
+                .ok_or(ContractError::InsufficientAmount)?;
+            if a_over_b != b_over_a || a_over_draw != draw_over_a {
+                return Err(ContractError::InvalidMarketParameters);
+            }
+        }
+
+        let lp_shares = if total_shares == 0 || pool.collateral == 0 {
             total_in
         } else {
-            // Subsequent liquidity: proportional to existing pool
             total_in
                 .checked_mul(total_shares)
-                .and_then(|v| v.checked_div(state.total_pool))
+                .and_then(|v| v.checked_div(pool.collateral))
                 .ok_or(ContractError::InsufficientAmount)?
         };
 
-        if lp_shares < min_lp_shares_out {
+        if lp_shares <= 0 || lp_shares < min_lp_shares_out {
             return Err(ContractError::SlippageExceeded);
         }
 
-        // ── EFFECTS ───────────────────────────────────────────────────────────
         Self::require_market_token(&env, &token)?;
-        state.pool_a = state.pool_a.checked_add(normalized_a)
+        pool.reserve_a = pool
+            .reserve_a
+            .checked_add(normalized_a)
             .ok_or(ContractError::InsufficientAmount)?;
-        state.pool_b = state.pool_b.checked_add(normalized_b)
+        pool.reserve_b = pool
+            .reserve_b
+            .checked_add(normalized_b)
             .ok_or(ContractError::InsufficientAmount)?;
-        state.pool_draw = state.pool_draw.checked_add(normalized_draw)
+        pool.reserve_draw = pool
+            .reserve_draw
+            .checked_add(normalized_draw)
             .ok_or(ContractError::InsufficientAmount)?;
-        state.total_pool = state.total_pool.checked_add(total_in)
+        pool.collateral = pool
+            .collateral
+            .checked_add(total_in)
             .ok_or(ContractError::InsufficientAmount)?;
-        Self::save_state(&env, &state);
+        Self::save_amm_pool(&env, &pool);
 
-        // Mint LP shares
-        let new_total_shares = total_shares.saturating_add(lp_shares);
+        let new_total_shares = total_shares
+            .checked_add(lp_shares)
+            .ok_or(ContractError::InsufficientAmount)?;
         env.storage().persistent().set(&LP_TOTAL_SHARES, &new_total_shares);
 
-        // Create or update provider's LP position
-        let position = LiquidityPosition {
+        let mut position = Self::load_lp_position(&env, &provider).unwrap_or(LiquidityPosition {
             provider: provider.clone(),
             market_id: state.market_id,
-            lp_shares,
             fee_debt: fee_per_share,
             entered_at: env.ledger().timestamp(),
-        };
+            lp_shares: 0,
+        });
+        position.lp_shares = position
+            .lp_shares
+            .checked_add(lp_shares)
+            .ok_or(ContractError::InsufficientAmount)?;
+        position.fee_debt = fee_per_share;
         Self::save_lp_position(&env, &provider, &position);
         Self::extend_market_ttl(&env);
 
-        // ── INTERACTIONS ──────────────────────────────────────────────────────
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&provider, &env.current_contract_address(), &total_in_raw);
 
@@ -693,6 +793,23 @@ impl Market {
             normalized_draw,
             lp_shares,
         );
+        if total_shares == 0 {
+            let tier_byte = match &state.tier {
+                OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier8) => 8,
+                OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier10) => 10,
+                OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier12) => 12,
+                OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier14) => 14,
+                OptionalMarketTier::None => 0,
+            };
+            boxmeout_shared::emit_pool_initialized(
+                &env,
+                state.market_id,
+                tier_byte as u32,
+                pool.reserve_a,
+                pool.reserve_b,
+                pool.reserve_draw,
+            );
+        }
 
         Ok(position)
     }
@@ -700,7 +817,7 @@ impl Market {
     // =========================================================================
     // REMOVE LIQUIDITY  — fund-moving
     // =========================================================================
-    /// Redeems LP shares and withdraws proportional pool collateral plus accrued fees.
+    /// Redeems LP shares for proportional AMM collateral.
     ///
     /// # Errors
     /// - `MarketNotOpen`: Market is not open (liquidity withdrawal only during Open phase)
@@ -720,22 +837,33 @@ impl Market {
         lp_shares_to_burn: i128,
         token: Address,
     ) -> Result<i128, ContractError> {
-        // ── CHECKS ────────────────────────────────────────────────────────────
         provider.require_auth();
         Self::require_not_paused(&env)?;
 
-        let mut state = Self::load_state(&env)?;
-        if state.status != MarketStatus::Open {
+        let state = Self::load_state(&env)?;
+        let mut pool = Self::load_amm_pool(&env).ok_or(ContractError::InvalidMarketStatus)?;
+        let active_traders: u32 = env
+            .storage()
+            .persistent()
+            .get(&AMM_ACTIVE_TRADERS)
+            .unwrap_or(0);
+        let terminal_withdrawal_ready = match &state.status {
+            MarketStatus::Resolved => match &state.outcome {
+                OptionalOutcome::Some(Outcome::NoContest) => active_traders == 0,
+                OptionalOutcome::Some(_) => true,
+                OptionalOutcome::None => false,
+            },
+            MarketStatus::Cancelled => active_traders == 0,
+            _ => false,
+        };
+        if state.status != MarketStatus::Open && !terminal_withdrawal_ready {
             return Err(ContractError::MarketNotOpen);
         }
-
         if lp_shares_to_burn <= 0 {
             return Err(ContractError::BelowMinimum);
         }
-
         let mut position = Self::load_lp_position(&env, &provider)
             .ok_or(ContractError::NoBetsFound)?;
-
         if lp_shares_to_burn > position.lp_shares {
             return Err(ContractError::InsufficientBalance);
         }
@@ -743,94 +871,35 @@ impl Market {
         let total_shares: i128 = env.storage().persistent()
             .get(&LP_TOTAL_SHARES)
             .unwrap_or(0);
+        if total_shares <= 0 || lp_shares_to_burn > total_shares {
+            return Err(ContractError::InsufficientBalance);
+        }
+        let withdraw = if lp_shares_to_burn == total_shares {
+            pool.collateral
+        } else {
+            pool.collateral
+                .checked_mul(lp_shares_to_burn)
+                .and_then(|value| value.checked_div(total_shares))
+                .ok_or(ContractError::InsufficientAmount)?
+        };
+        let withdraw_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            withdraw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_paid = boxmeout_shared::math::normalize_token_amount(
+            withdraw_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
         let fee_per_share: i128 = env.storage().persistent()
             .get(&LP_FEE_PER_SHARE)
             .unwrap_or(0);
-
-        // Compute proportional withdrawal amounts
-        let share_ratio_num = lp_shares_to_burn;
-        let share_ratio_den = total_shares;
-
-        let withdraw_a = if share_ratio_den > 0 {
-            state.pool_a.checked_mul(share_ratio_num)
-                .and_then(|v| v.checked_div(share_ratio_den))
-                .unwrap_or(0)
-        } else { 0 };
-        let withdraw_b = if share_ratio_den > 0 {
-            state.pool_b.checked_mul(share_ratio_num)
-                .and_then(|v| v.checked_div(share_ratio_den))
-                .unwrap_or(0)
-        } else { 0 };
-        let withdraw_draw = if share_ratio_den > 0 {
-            state.pool_draw.checked_mul(share_ratio_num)
-                .and_then(|v| v.checked_div(share_ratio_den))
-                .unwrap_or(0)
-        } else { 0 };
-        let withdraw_a_raw = boxmeout_shared::math::denormalize_token_amount_floor(
-            withdraw_a,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let withdraw_b_raw = boxmeout_shared::math::denormalize_token_amount_floor(
-            withdraw_b,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let withdraw_draw_raw = boxmeout_shared::math::denormalize_token_amount_floor(
-            withdraw_draw,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let withdraw_a_paid = boxmeout_shared::math::normalize_token_amount(
-            withdraw_a_raw,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let withdraw_b_paid = boxmeout_shared::math::normalize_token_amount(
-            withdraw_b_raw,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let withdraw_draw_paid = boxmeout_shared::math::normalize_token_amount(
-            withdraw_draw_raw,
-            state.config.token_decimals,
-        )
-        .ok_or(ContractError::InvalidTokenPrecision)?;
-        let total_out = withdraw_a_paid
-            .checked_add(withdraw_b_paid)
-            .and_then(|v| v.checked_add(withdraw_draw_paid))
-            .ok_or(ContractError::InsufficientAmount)?;
-
-        // Compute accrued fees using fee-per-share accumulator
         let fees_claimed = boxmeout_shared::amm::calc_claimable_lp_fees(
             fee_per_share,
             position.fee_debt,
             lp_shares_to_burn,
         );
-
-        // ── EFFECTS ───────────────────────────────────────────────────────────
-        Self::require_market_token(&env, &token)?;
-        state.pool_a = state.pool_a.saturating_sub(withdraw_a_paid);
-        state.pool_b = state.pool_b.saturating_sub(withdraw_b_paid);
-        state.pool_draw = state.pool_draw.saturating_sub(withdraw_draw_paid);
-        state.total_pool = state.total_pool.saturating_sub(total_out);
-        Self::save_state(&env, &state);
-
-        let new_total_shares = total_shares.saturating_sub(lp_shares_to_burn);
-        env.storage().persistent().set(&LP_TOTAL_SHARES, &new_total_shares);
-
-        // Update or remove provider's position
-        let remaining_shares = position.lp_shares - lp_shares_to_burn;
-        if remaining_shares == 0 {
-            Self::remove_lp_position(&env, &provider);
-        } else {
-            position.lp_shares = remaining_shares;
-            position.fee_debt = fee_per_share; // reset debt to current accumulator
-            Self::save_lp_position(&env, &provider, &position);
-        }
-        Self::extend_market_ttl(&env);
-
-        // ── INTERACTIONS ──────────────────────────────────────────────────────
         let fees_claimed_raw = boxmeout_shared::math::denormalize_token_amount_floor(
             fees_claimed,
             state.config.token_decimals,
@@ -841,12 +910,77 @@ impl Market {
             state.config.token_decimals,
         )
         .ok_or(ContractError::InvalidTokenPrecision)?;
-        let total_out_raw = withdraw_a_raw
-            .checked_add(withdraw_b_raw)
-            .and_then(|v| v.checked_add(withdraw_draw_raw))
-            .and_then(|v| v.checked_add(fees_claimed_raw))
+        let total_withdrawal = withdraw_paid
+            .checked_add(fees_claimed_paid)
             .ok_or(ContractError::InsufficientAmount)?;
-        let payout = total_out
+        let remaining_collateral = pool
+            .collateral
+            .checked_sub(total_withdrawal)
+            .ok_or(ContractError::InsufficientBalance)?;
+        let refund_liability: i128 = env
+            .storage()
+            .persistent()
+            .get(&AMM_REFUND_LIABILITY)
+            .unwrap_or(0);
+        let required_collateral = match &state.status {
+            MarketStatus::Open => pool.outstanding_shares.max(refund_liability),
+            MarketStatus::Cancelled => refund_liability,
+            MarketStatus::Resolved => match &state.outcome {
+                OptionalOutcome::Some(Outcome::FighterA) => pool.outstanding_a,
+                OptionalOutcome::Some(Outcome::FighterB) => pool.outstanding_b,
+                OptionalOutcome::Some(Outcome::Draw) => pool.outstanding_draw,
+                OptionalOutcome::Some(Outcome::NoContest) => refund_liability,
+                OptionalOutcome::None => return Err(ContractError::InvalidOutcome),
+            },
+            _ => return Err(ContractError::MarketNotOpen),
+        };
+        if remaining_collateral < required_collateral {
+            return Err(ContractError::InsufficientBalance);
+        }
+        let withdraw_a = pool
+            .reserve_a
+            .checked_mul(lp_shares_to_burn)
+            .and_then(|value| value.checked_div(total_shares))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let withdraw_b = pool
+            .reserve_b
+            .checked_mul(lp_shares_to_burn)
+            .and_then(|value| value.checked_div(total_shares))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let withdraw_draw = pool
+            .reserve_draw
+            .checked_mul(lp_shares_to_burn)
+            .and_then(|value| value.checked_div(total_shares))
+            .ok_or(ContractError::InsufficientAmount)?;
+        Self::require_market_token(&env, &token)?;
+        pool.collateral = remaining_collateral;
+        pool.reserve_a = pool.reserve_a.checked_sub(withdraw_a)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.reserve_b = pool.reserve_b.checked_sub(withdraw_b)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.reserve_draw = pool.reserve_draw.checked_sub(withdraw_draw)
+            .ok_or(ContractError::InsufficientBalance)?;
+        Self::save_amm_pool(&env, &pool);
+
+        let new_total_shares = total_shares
+            .checked_sub(lp_shares_to_burn)
+            .ok_or(ContractError::InsufficientBalance)?;
+        env.storage().persistent().set(&LP_TOTAL_SHARES, &new_total_shares);
+
+        let remaining_shares = position.lp_shares - lp_shares_to_burn;
+        if remaining_shares == 0 {
+            Self::remove_lp_position(&env, &provider);
+        } else {
+            position.lp_shares = remaining_shares;
+            position.fee_debt = fee_per_share;
+            Self::save_lp_position(&env, &provider, &position);
+        }
+        Self::extend_market_ttl(&env);
+
+        let total_out_raw = withdraw_raw
+            .checked_add(fees_claimed_raw)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let payout = withdraw_paid
             .checked_add(fees_claimed_paid)
             .ok_or(ContractError::InsufficientAmount)?;
         if total_out_raw > 0 {
@@ -859,13 +993,502 @@ impl Market {
             state.market_id,
             provider,
             lp_shares_to_burn,
-            withdraw_a_paid,
-            withdraw_b_paid,
-            withdraw_draw_paid,
+            withdraw_a,
+            withdraw_b,
+            withdraw_draw,
             fees_claimed_paid,
         );
 
         Ok(payout)
+    }
+
+    /// Buys outcome shares from the optional AMM using collateral.
+    pub fn buy_shares(
+        env: Env,
+        trader: Address,
+        side: BetSide,
+        amount: i128,
+        token: Address,
+        min_shares_out: i128,
+    ) -> Result<i128, ContractError> {
+        trader.require_auth();
+        Self::require_not_paused(&env)?;
+        if min_shares_out < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let state = Self::load_state(&env)?;
+        if state.status != MarketStatus::Open {
+            return Err(ContractError::MarketNotOpen);
+        }
+        let lock_threshold = state
+            .fight
+            .scheduled_at
+            .saturating_sub(state.config.lock_before_secs);
+        if env.ledger().timestamp() >= lock_threshold {
+            return Err(ContractError::BettingClosed);
+        }
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let amount_normalized =
+            boxmeout_shared::math::normalize_token_amount(amount, state.config.token_decimals)
+                .ok_or(ContractError::InvalidTokenPrecision)?;
+        if amount_normalized < state.config.min_bet_amount {
+            return Err(ContractError::BelowMinimum);
+        }
+        if amount_normalized > state.config.max_bet {
+            return Err(ContractError::BetTooLarge);
+        }
+
+
+        let (shares_out, impact_bps) = boxmeout_shared::amm::compute_odds(
+            pool.reserve_a,
+            pool.reserve_b,
+            pool.reserve_draw,
+            amount_normalized,
+            Self::amm_side(&side),
+        )
+        .ok_or(ContractError::InvalidAmount)?;
+        if shares_out < min_shares_out {
+            return Err(ContractError::SlippageExceeded);
+        }
+        let tier_byte = match &state.tier {
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier8) => 8,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier10) => 10,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier12) => 12,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier14) => 14,
+            OptionalMarketTier::None => 0,
+        };
+        if !boxmeout_shared::amm::check_tier_slippage(
+            tier_byte,
+            pool.collateral,
+            impact_bps,
+        ) {
+            return Err(ContractError::SlippageExceeded);
+        }
+
+        let collateral_after = pool
+            .collateral
+            .checked_add(amount_normalized)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let outstanding_after = pool
+            .outstanding_shares
+            .checked_add(shares_out)
+            .ok_or(ContractError::InsufficientAmount)?;
+        match side {
+            BetSide::FighterA => {
+                pool.reserve_a = pool.reserve_a.checked_sub(shares_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.reserve_draw = pool.reserve_draw.checked_add(amount_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.outstanding_a = pool.outstanding_a.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+            BetSide::FighterB => {
+                pool.reserve_b = pool.reserve_b.checked_sub(shares_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.reserve_draw = pool.reserve_draw.checked_add(amount_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.outstanding_b = pool.outstanding_b.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+            BetSide::Draw => {
+                pool.reserve_draw = pool.reserve_draw.checked_sub(shares_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.reserve_a = pool.reserve_a.checked_add(amount_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.outstanding_draw = pool.outstanding_draw.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+        }
+        pool.collateral = collateral_after;
+        pool.outstanding_shares = outstanding_after;
+
+        let existing_position = Self::load_amm_position(&env, &trader);
+        let mut position = existing_position.clone().unwrap_or(AmmPosition {
+            market_id: state.market_id,
+            shares_a: 0,
+            shares_b: 0,
+            shares_draw: 0,
+            net_collateral: 0,
+            claimed: false,
+        });
+        if position.market_id != state.market_id || position.claimed {
+            return Err(ContractError::InvalidMarketStatus);
+        }
+        match side {
+            BetSide::FighterA => {
+                position.shares_a = position.shares_a.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+            BetSide::FighterB => {
+                position.shares_b = position.shares_b.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+            BetSide::Draw => {
+                position.shares_draw = position.shares_draw.checked_add(shares_out)
+                    .ok_or(ContractError::InsufficientAmount)?;
+            }
+        }
+        let old_refund = position.net_collateral.max(0);
+        position.net_collateral = position.net_collateral.checked_add(amount_normalized)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let new_refund = position.net_collateral.max(0);
+        let mut refund_liability: i128 = env
+            .storage()
+            .persistent()
+            .get(&AMM_REFUND_LIABILITY)
+            .unwrap_or(0);
+        refund_liability = refund_liability
+            .checked_sub(old_refund)
+            .and_then(|value| value.checked_add(new_refund))
+            .ok_or(ContractError::InsufficientAmount)?;
+        if collateral_after < outstanding_after.max(refund_liability) {
+            return Err(ContractError::InsufficientBalance);
+        }
+        if existing_position.is_none() {
+            let active_traders: u32 = env
+                .storage()
+                .persistent()
+                .get(&AMM_ACTIVE_TRADERS)
+                .unwrap_or(0);
+            env.storage().persistent().set(
+                &AMM_ACTIVE_TRADERS,
+                &active_traders
+                    .checked_add(1)
+                    .ok_or(ContractError::InsufficientAmount)?,
+            );
+        }
+
+        Self::require_market_token(&env, &token)?;
+        env.storage()
+            .persistent()
+            .set(&AMM_REFUND_LIABILITY, &refund_liability);
+        Self::save_amm_pool(&env, &pool);
+        Self::save_amm_position(&env, &trader, &position);
+        Self::extend_market_ttl(&env);
+        token::Client::new(&env, &token).transfer(
+            &trader,
+            &env.current_contract_address(),
+            &amount,
+        );
+        env.events().publish(
+            (Symbol::new(&env, "amm_shares_bought"), state.market_id),
+            (trader, side, amount_normalized, shares_out, impact_bps),
+        );
+        Ok(shares_out)
+    }
+
+    /// Sells outcome shares back to the optional AMM for collateral.
+    pub fn sell_shares(
+        env: Env,
+        trader: Address,
+        side: BetSide,
+        shares_in: i128,
+        token: Address,
+        min_amount_out: i128,
+    ) -> Result<i128, ContractError> {
+        trader.require_auth();
+        Self::require_not_paused(&env)?;
+        let state = Self::load_state(&env)?;
+        if state.status != MarketStatus::Open {
+            return Err(ContractError::MarketNotOpen);
+        }
+        let lock_threshold = state
+            .fight
+            .scheduled_at
+            .saturating_sub(state.config.lock_before_secs);
+        if env.ledger().timestamp() >= lock_threshold {
+            return Err(ContractError::BettingClosed);
+        }
+        if shares_in <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if min_amount_out < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let shares_normalized = shares_in;
+        let min_out_normalized = boxmeout_shared::math::normalize_token_amount(
+            min_amount_out,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let mut pool = Self::load_amm_pool(&env).ok_or(ContractError::InvalidMarketStatus)?;
+        let (quoted_amount_out, impact_bps) = boxmeout_shared::amm::compute_sell_quote(
+            pool.reserve_a,
+            pool.reserve_b,
+            pool.reserve_draw,
+            shares_normalized,
+            Self::amm_side(&side),
+        )
+        .ok_or(ContractError::InvalidAmount)?;
+        let amount_out_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            quoted_amount_out,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let amount_out = boxmeout_shared::math::normalize_token_amount(
+            amount_out_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        if amount_out < min_out_normalized {
+            return Err(ContractError::SlippageExceeded);
+        }
+        let tier_byte = match &state.tier {
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier8) => 8,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier10) => 10,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier12) => 12,
+            OptionalMarketTier::Some(boxmeout_shared::types::MarketTier::Tier14) => 14,
+            OptionalMarketTier::None => 0,
+        };
+        if !boxmeout_shared::amm::check_tier_slippage(
+            tier_byte,
+            pool.collateral,
+            impact_bps,
+        ) {
+            return Err(ContractError::SlippageExceeded);
+        }
+
+        let mut position =
+            Self::load_amm_position(&env, &trader).ok_or(ContractError::InsufficientBalance)?;
+        if position.market_id != state.market_id || position.claimed {
+            return Err(ContractError::InvalidMarketStatus);
+        }
+        match side {
+            BetSide::FighterA if shares_normalized <= position.shares_a => {
+                position.shares_a -= shares_normalized;
+            }
+            BetSide::FighterB if shares_normalized <= position.shares_b => {
+                position.shares_b -= shares_normalized;
+            }
+            BetSide::Draw if shares_normalized <= position.shares_draw => {
+                position.shares_draw -= shares_normalized;
+            }
+            _ => return Err(ContractError::InsufficientBalance),
+        }
+        let collateral_after = pool
+            .collateral
+            .checked_sub(amount_out)
+            .ok_or(ContractError::InsufficientBalance)?;
+        let outstanding_after = pool
+            .outstanding_shares
+            .checked_sub(shares_normalized)
+            .ok_or(ContractError::InsufficientBalance)?;
+        let old_refund = position.net_collateral.max(0);
+        position.net_collateral = position.net_collateral.checked_sub(amount_out)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let new_refund = position.net_collateral.max(0);
+        let mut refund_liability: i128 = env
+            .storage()
+            .persistent()
+            .get(&AMM_REFUND_LIABILITY)
+            .unwrap_or(0);
+        refund_liability = refund_liability
+            .checked_sub(old_refund)
+            .and_then(|value| value.checked_add(new_refund))
+            .ok_or(ContractError::InsufficientAmount)?;
+        if collateral_after < outstanding_after.max(refund_liability) {
+            return Err(ContractError::InsufficientBalance);
+        }
+        match side {
+            BetSide::FighterA => {
+                pool.reserve_a = pool.reserve_a.checked_add(shares_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.reserve_draw = pool.reserve_draw.checked_sub(amount_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.outstanding_a = pool.outstanding_a.checked_sub(shares_normalized)
+                    .ok_or(ContractError::InsufficientBalance)?;
+            }
+            BetSide::FighterB => {
+                pool.reserve_b = pool.reserve_b.checked_add(shares_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.reserve_draw = pool.reserve_draw.checked_sub(amount_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.outstanding_b = pool.outstanding_b.checked_sub(shares_normalized)
+                    .ok_or(ContractError::InsufficientBalance)?;
+            }
+            BetSide::Draw => {
+                pool.reserve_draw = pool.reserve_draw.checked_add(shares_normalized)
+                    .ok_or(ContractError::InsufficientAmount)?;
+                pool.reserve_a = pool.reserve_a.checked_sub(amount_out)
+                    .ok_or(ContractError::InsufficientBalance)?;
+                pool.outstanding_draw = pool.outstanding_draw.checked_sub(shares_normalized)
+                    .ok_or(ContractError::InsufficientBalance)?;
+            }
+        }
+        pool.collateral = collateral_after;
+        pool.outstanding_shares = outstanding_after;
+
+        Self::require_market_token(&env, &token)?;
+        env.storage()
+            .persistent()
+            .set(&AMM_REFUND_LIABILITY, &refund_liability);
+        Self::save_amm_pool(&env, &pool);
+        Self::save_amm_position(&env, &trader, &position);
+        Self::extend_market_ttl(&env);
+        if amount_out_raw > 0 {
+            token::Client::new(&env, &token).transfer(
+                &env.current_contract_address(),
+                &trader,
+                &amount_out_raw,
+            );
+        }
+        env.events().publish(
+            (Symbol::new(&env, "amm_shares_sold"), state.market_id),
+            (trader, side, shares_normalized, amount_out),
+        );
+        Ok(amount_out)
+    }
+
+    /// Redeems an AMM position after resolution, or refunds its net spend if cancelled.
+    pub fn claim_amm_shares(
+        env: Env,
+        trader: Address,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        trader.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_not_claiming(&env)?;
+        let state = Self::load_state(&env)?;
+        let mut position =
+            Self::load_amm_position(&env, &trader).ok_or(ContractError::NoBetsFound)?;
+        if position.market_id != state.market_id {
+            return Err(ContractError::NoBetsFound);
+        }
+        if position.claimed {
+            return Err(ContractError::AlreadyClaimed);
+        }
+        let mut pool = Self::load_amm_pool(&env).ok_or(ContractError::InvalidMarketStatus)?;
+        let shares_held = position
+            .shares_a
+            .checked_add(position.shares_b)
+            .and_then(|value| value.checked_add(position.shares_draw))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let (gross_payout, fee) = match &state.status {
+            MarketStatus::Resolved => {
+                let gross_payout = match &state.outcome {
+                    OptionalOutcome::Some(Outcome::FighterA) => position.shares_a,
+                    OptionalOutcome::Some(Outcome::FighterB) => position.shares_b,
+                    OptionalOutcome::Some(Outcome::Draw) => position.shares_draw,
+                    OptionalOutcome::Some(Outcome::NoContest) => position.net_collateral.max(0),
+                    OptionalOutcome::None => return Err(ContractError::InvalidOutcome),
+                };
+                let fee = if matches!(
+                    &state.outcome,
+                    OptionalOutcome::Some(Outcome::NoContest)
+                ) {
+                    0
+                } else {
+                    gross_payout
+                        .checked_mul(state.config.fee_bps as i128)
+                        .and_then(|value| value.checked_div(10_000))
+                        .ok_or(ContractError::InsufficientAmount)?
+                };
+                (gross_payout, fee)
+            }
+            MarketStatus::Cancelled => (position.net_collateral.max(0), 0),
+            _ => return Err(ContractError::MarketNotResolved),
+        };
+        if shares_held > pool.outstanding_shares || gross_payout > pool.collateral {
+            return Err(ContractError::InsufficientBalance);
+        }
+        let mut refund_liability: i128 = env
+            .storage()
+            .persistent()
+            .get(&AMM_REFUND_LIABILITY)
+            .unwrap_or(0);
+        let user_refund = position.net_collateral.max(0);
+        refund_liability = refund_liability
+            .checked_sub(user_refund)
+            .ok_or(ContractError::InsufficientBalance)?;
+        if matches!(&state.status, MarketStatus::Cancelled) && gross_payout > user_refund {
+            return Err(ContractError::InsufficientBalance);
+        }
+        let active_traders: u32 = env
+            .storage()
+            .persistent()
+            .get(&AMM_ACTIVE_TRADERS)
+            .unwrap_or(0);
+        let active_traders = active_traders
+            .checked_sub(1)
+            .ok_or(ContractError::InsufficientBalance)?;
+        let payout = gross_payout
+            .checked_sub(fee)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let fee_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            fee,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let payout_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            payout,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let fee_paid = boxmeout_shared::math::normalize_token_amount(
+            fee_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let payout_paid = boxmeout_shared::math::normalize_token_amount(
+            payout_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let total_paid = fee_paid
+            .checked_add(payout_paid)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let treasury: Address = env
+            .storage()
+            .persistent()
+            .get(&TREASURY)
+            .ok_or(ContractError::NotFactory)?;
+        Self::require_market_token(&env, &token)?;
+
+        pool.collateral = pool
+            .collateral
+            .checked_sub(total_paid)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.outstanding_shares = pool
+            .outstanding_shares
+            .checked_sub(shares_held)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.outstanding_a = pool
+            .outstanding_a
+            .checked_sub(position.shares_a)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.outstanding_b = pool
+            .outstanding_b
+            .checked_sub(position.shares_b)
+            .ok_or(ContractError::InsufficientBalance)?;
+        pool.outstanding_draw = pool
+            .outstanding_draw
+            .checked_sub(position.shares_draw)
+            .ok_or(ContractError::InsufficientBalance)?;
+        position.shares_a = 0;
+        position.shares_b = 0;
+        position.shares_draw = 0;
+        position.claimed = true;
+        env.storage()
+            .persistent()
+            .set(&AMM_REFUND_LIABILITY, &refund_liability);
+        env.storage()
+            .persistent()
+            .set(&AMM_ACTIVE_TRADERS, &active_traders);
+        Self::save_amm_pool(&env, &pool);
+        Self::save_amm_position(&env, &trader, &position);
+        Self::extend_market_ttl(&env);
+        env.storage().instance().set(&CLAIMING, &true);
+        let token_client = token::Client::new(&env, &token);
+        if fee_raw > 0 {
+            token_client.transfer(&env.current_contract_address(), &treasury, &fee_raw);
+        }
+        if payout_raw > 0 {
+            token_client.transfer(&env.current_contract_address(), &trader, &payout_raw);
+        }
+        env.storage().instance().set(&CLAIMING, &false);
+        Ok(payout_paid)
     }
 
     // =========================================================================
@@ -1854,9 +2477,14 @@ impl Market {
     pub fn has_claimed(env: Env, bettor: Address) -> bool {
         let bets = Self::load_bets(&env, &bettor);
         if bets.is_empty() {
-            return false;
+            return Self::load_amm_position(&env, &bettor)
+                .map(|position| position.claimed)
+                .unwrap_or(false);
         }
         bets.iter().all(|b| b.claimed)
+            && Self::load_amm_position(&env, &bettor)
+                .map(|position| position.claimed)
+                .unwrap_or(true)
     }
 
     /// Returns the current status of the market.
@@ -1922,11 +2550,18 @@ impl Market {
     /// `(shares_out, impact_bps)` using normalized token units, or `(0, 0)` if
     /// the AMM is not yet active or the amount cannot be represented exactly.
     pub fn get_amm_odds(env: Env, side: u32, amount: i128) -> (i128, i128) {
+        if side > 2 {
+            return (0, 0);
+        }
         let state = match Self::load_state(&env) {
             Ok(s) => s,
             Err(_) => return (0, 0),
         };
-        if state.pool_a <= 0 || state.pool_b <= 0 || state.pool_draw <= 0 || amount <= 0 {
+        let pool = match Self::load_amm_pool(&env) {
+            Some(pool) => pool,
+            None => return (0, 0),
+        };
+        if pool.reserve_a <= 0 || pool.reserve_b <= 0 || pool.reserve_draw <= 0 || amount <= 0 {
             return (0, 0);
         }
         let amount = match boxmeout_shared::math::normalize_token_amount(
@@ -1937,14 +2572,65 @@ impl Market {
             None => return (0, 0),
         };
         match boxmeout_shared::amm::compute_odds(
-            state.pool_a,
-            state.pool_b,
-            state.pool_draw,
+            pool.reserve_a,
+            pool.reserve_b,
+            pool.reserve_draw,
             amount,
             side as u8,
         ) {
             Some((shares, impact)) => (shares, impact),
             None => (0, 0),
+        }
+    }
+
+    /// Returns a quote for selling shared-scale outcome shares to the AMM.
+    pub fn get_amm_sell_quote(env: Env, side: u32, shares_in: i128) -> (i128, i128) {
+        if side > 2 || shares_in <= 0 {
+            return (0, 0);
+        }
+        let pool = match Self::load_amm_pool(&env) {
+            Some(pool) => pool,
+            None => return (0, 0),
+        };
+        match boxmeout_shared::amm::compute_sell_quote(
+            pool.reserve_a,
+            pool.reserve_b,
+            pool.reserve_draw,
+            shares_in,
+            side as u8,
+        ) {
+            Some((amount_out, impact)) => (amount_out, impact),
+            None => (0, 0),
+        }
+    }
+
+    /// Returns AMM reserves, collateral, outstanding shares, and LP share supply.
+    pub fn get_amm_pool(env: Env) -> (i128, i128, i128, i128, i128, i128) {
+        match Self::load_amm_pool(&env) {
+            Some(pool) => (
+                pool.reserve_a,
+                pool.reserve_b,
+                pool.reserve_draw,
+                pool.collateral,
+                pool.outstanding_shares,
+                env.storage()
+                    .persistent()
+                    .get(&LP_TOTAL_SHARES)
+                    .unwrap_or(0),
+            ),
+            None => (0, 0, 0, 0, 0, 0),
+        }
+    }
+
+    /// Returns a trader's outstanding AMM shares in A, B, Draw order.
+    pub fn get_amm_position(env: Env, trader: Address) -> (i128, i128, i128) {
+        match Self::load_amm_position(&env, &trader) {
+            Some(position) if !position.claimed => (
+                position.shares_a,
+                position.shares_b,
+                position.shares_draw,
+            ),
+            _ => (0, 0, 0),
         }
     }
 
@@ -2011,20 +2697,18 @@ impl Market {
     /// Reads `lp_fee_per_share` and the provider's `lp_position` from storage
     /// and computes the unclaimed fee using the fee-per-share accumulator pattern.
     /// Returns `0` if no position exists.
-    pub fn get_lp_claimable_fees(env: Env, _market_id: u64, _provider: Address) -> i128 {
+    pub fn get_lp_claimable_fees(env: Env, _market_id: u64, provider: Address) -> i128 {
         let lp_fee_per_share: i128 = env
             .storage()
             .persistent()
-            .get(&soroban_sdk::Symbol::new(&env, "lp_fee_per_share"))
+            .get(&LP_FEE_PER_SHARE)
             .unwrap_or(0);
-        let position: Option<(i128, i128)> = env
-            .storage()
-            .persistent()
-            .get(&soroban_sdk::Symbol::new(&env, "lp_position"));
-        match position {
-            Some((lp_shares, lp_fee_debt)) => {
-                boxmeout_shared::calc_claimable_lp_fees(lp_fee_per_share, lp_fee_debt, lp_shares)
-            }
+        match Self::load_lp_position(&env, &provider) {
+            Some(position) => boxmeout_shared::calc_claimable_lp_fees(
+                lp_fee_per_share,
+                position.fee_debt,
+                position.lp_shares,
+            ),
             None => 0,
         }
     }

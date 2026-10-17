@@ -8924,3 +8924,126 @@ mod oracle_pending_reports_ttl_tiers_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod amm_pool_tests {
+    use boxmeout_shared::types::{
+        BetSide, FightDetails, MarketConfig, MarketState, MarketStatus, OptionalMarketTier,
+        OptionalOracleRole, OptionalOutcome, Outcome,
+    };
+    use crate::Market;
+    use soroban_sdk::{
+        testutils::Address as _,
+        token::StellarAssetClient,
+        Address, Env, Vec,
+    };
+
+    #[test]
+    fn seeded_pool_trades_shares_and_settles_winning_position() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Market);
+        let client = crate::MarketClient::new(&env, &contract_id);
+        let token = env.register_stellar_asset_contract(Address::generate(&env));
+        let provider = Address::generate(&env);
+        let trader = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let fight = FightDetails {
+            match_id: soroban_sdk::String::from_str(&env, "AMM-TEST"),
+            fighter_a: soroban_sdk::String::from_str(&env, "A"),
+            fighter_b: soroban_sdk::String::from_str(&env, "B"),
+            weight_class: soroban_sdk::String::from_str(&env, "Test"),
+            scheduled_at: 100_000,
+            venue: soroban_sdk::String::from_str(&env, "Test"),
+            title_fight: false,
+        };
+        let config = MarketConfig {
+            min_bet_amount: 1_000_000,
+            max_bet: 100_000_000,
+            fee_bps: 200,
+            lock_before_secs: 3_600,
+            resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
+        };
+        let state = MarketState {
+            market_id: 1,
+            fight,
+            config,
+            status: MarketStatus::Open,
+            outcome: OptionalOutcome::None,
+            pool_a: 0,
+            pool_b: 0,
+            pool_draw: 0,
+            total_pool: 0,
+            resolved_at: 0,
+            oracle_used: OptionalOracleRole::None,
+            tier: OptionalMarketTier::None,
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &state);
+            env.storage().persistent().set(&"TREASURY", &treasury);
+            env.storage()
+                .persistent()
+                .set(&"BETTOR_LIST", &Vec::<Address>::new(&env));
+        });
+
+        StellarAssetClient::new(&env, &token).mint(&provider, &30_000_000);
+        let lp_position = client.add_liquidity(
+            &provider,
+            &10_000_000,
+            &10_000_000,
+            &10_000_000,
+            &token,
+            &30_000_000,
+        );
+        assert_eq!(lp_position.lp_shares, 30_000_000);
+        assert_eq!(
+            client.get_amm_pool(),
+            (10_000_000, 10_000_000, 10_000_000, 30_000_000, 0, 30_000_000)
+        );
+
+        StellarAssetClient::new(&env, &token).mint(&trader, &1_000_000);
+        let shares = client.buy_shares(
+            &trader,
+            &BetSide::FighterA,
+            &1_000_000,
+            &token,
+            &0,
+        );
+        let traded_pool = client.get_amm_pool();
+        assert!(traded_pool.0 < 10_000_000);
+        assert!(traded_pool.2 > 10_000_000);
+        assert_eq!(traded_pool.4, shares);
+        assert_eq!(client.get_amm_position(&trader).0, shares);
+
+        let sold_shares = shares / 2;
+        let amount_out = client.sell_shares(
+            &trader,
+            &BetSide::FighterA,
+            &sold_shares,
+            &token,
+            &0,
+        );
+        assert!(amount_out > 0);
+        assert_eq!(
+            client.get_amm_position(&trader).0,
+            shares - sold_shares
+        );
+
+        env.as_contract(&contract_id, || {
+            let mut state: MarketState = env.storage().persistent().get(&"STATE").unwrap();
+            state.status = MarketStatus::Resolved;
+            state.outcome = OptionalOutcome::Some(Outcome::FighterA);
+            env.storage().persistent().set(&"STATE", &state);
+        });
+        let payout = client.claim_amm_shares(&trader, &token);
+        assert!(payout > 0);
+        assert_eq!(client.get_amm_pool().4, 0);
+
+        let withdrawn = client.remove_liquidity(&provider, &lp_position.lp_shares, &token);
+        assert!(withdrawn > 0);
+        assert_eq!(client.get_amm_pool().3, 0);
+    }
+}
