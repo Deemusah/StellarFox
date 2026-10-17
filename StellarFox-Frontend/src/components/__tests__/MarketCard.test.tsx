@@ -55,6 +55,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
     match_id: 'match-1',
     fighter_a: 'Canelo Alvarez',
     fighter_b: 'Gennady Golovkin',
+    category: 'BOXING',
     weight_class: 'Super Middleweight',
     title_fight: false,
     venue: 'T-Mobile Arena',
@@ -166,6 +167,11 @@ describe('MarketCard', () => {
     it('shows weight class', () => {
       render(<MarketCard market={makeMarket({ weight_class: 'Heavyweight' })} />);
       expect(screen.getByText('Heavyweight')).toBeInTheDocument();
+    });
+
+    it('shows market category', () => {
+      render(<MarketCard market={makeMarket({ category: 'KICKBOXING' })} />);
+      expect(screen.getByText('KICKBOXING')).toBeInTheDocument();
     });
 
     it('shows total pool in XLM', () => {
