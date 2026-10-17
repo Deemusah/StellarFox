@@ -111,9 +111,9 @@ pub struct FightDetails {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarketConfig {
-    /// Minimum bet in stroops (1 XLM = 10_000_000 stroops)
+    /// Minimum bet in the shared seven-decimal calculation scale.
     pub min_bet_amount: i128,
-    /// Maximum single bet in stroops
+    /// Maximum single bet in the shared seven-decimal calculation scale.
     pub max_bet: i128,
     /// Platform fee in basis points (200 = 2%)
     pub fee_bps: u32,
@@ -130,15 +130,19 @@ pub struct MarketConfig {
     /// At ~5 s per ledger, 720 ledgers ≈ 1 hour.
     /// Set to 0 to disable the cooldown (immediate resolution).
     pub dispute_cooldown_ledgers: u32,
+    /// Declared native token precision. It must match the first token used by
+    /// the market. Amounts are normalized to seven decimals before calculations;
+    /// conversions that would lose input precision fail.
+    pub token_decimals: u32,
 }
 
 /// Configuration passed to MarketFactory on initialization.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactoryConfig {
-    /// Minimum bet in stroops for newly created markets (1 XLM = 10_000_000 stroops)
+    /// Minimum bet in the shared seven-decimal calculation scale.
     pub default_min_bet: i128,
-    /// Maximum single bet in stroops for newly created markets
+    /// Maximum single bet in the shared seven-decimal calculation scale.
     pub default_max_bet: i128,
     /// Platform fee in basis points (200 = 2%) for newly created markets
     pub default_fee_bps: u32,
@@ -168,7 +172,7 @@ pub struct BetRecord {
     pub market_id: u64,
     /// Which outcome the bettor backed
     pub side: BetSide,
-    /// Amount staked in stroops
+    /// Amount staked in the shared seven-decimal calculation scale.
     pub amount: i128,
     /// Unix timestamp when the bet was placed
     pub placed_at: u64,
@@ -212,13 +216,13 @@ pub struct MarketState {
     pub status: MarketStatus,
     /// None until market is resolved
     pub outcome: OptionalOutcome,
-    /// Total stroops staked on FighterA
+    /// Total normalized token units staked on FighterA (seven decimals).
     pub pool_a: i128,
-    /// Total stroops staked on FighterB
+    /// Total normalized token units staked on FighterB (seven decimals).
     pub pool_b: i128,
-    /// Total stroops staked on Draw
+    /// Total normalized token units staked on Draw (seven decimals).
     pub pool_draw: i128,
-    /// Sum of all three pools
+    /// Sum of all three pools in the shared seven-decimal calculation scale.
     pub total_pool: i128,
     /// 0 until resolved
     pub resolved_at: u64,
@@ -257,7 +261,7 @@ pub struct OracleReport {
 pub struct UserPosition {
     pub market_id: u64,
     pub side: BetSide,
-    /// Total unclaimed stake on this side in this market (stroops)
+    /// Total unclaimed stake on this side in the shared seven-decimal scale.
     pub amount: i128,
 }
 
@@ -267,9 +271,9 @@ pub struct UserPosition {
 pub struct ClaimReceipt {
     pub bettor: Address,
     pub market_id: u64,
-    /// Gross payout including original stake
+    /// Gross payout including original stake in the shared seven-decimal scale.
     pub amount_won: i128,
-    /// Platform fee deducted before transfer
+    /// Platform fee deducted before transfer in the shared seven-decimal scale.
     pub fee_deducted: i128,
     pub claimed_at: u64,
 }
@@ -333,5 +337,3 @@ pub struct FeeTier {
     /// Platform fee in basis points (e.g. 200 = 2.00%, 150 = 1.50%, 100 = 1.00%).
     pub fee_bps: u32,
 }
-
-

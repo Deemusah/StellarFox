@@ -47,6 +47,8 @@ mod security_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -435,6 +437,8 @@ mod place_bet_edge_cases {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -809,6 +813,8 @@ mod full_market_lifecycle {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -992,6 +998,8 @@ mod resolve_dispute_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1180,6 +1188,8 @@ mod get_current_odds_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1325,6 +1335,8 @@ mod estimate_payout_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1510,6 +1522,8 @@ mod oracle_sig_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1823,6 +1837,8 @@ mod claim_routing_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2192,6 +2208,8 @@ mod bet_timing_lock_tests {
             lock_before_secs: LOCK_BEFORE_SECS,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2323,11 +2341,17 @@ mod min_bet_enforcement_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
-            tier: 0,
         }
     }
 
     fn setup(env: &Env, min_bet_amount: i128) -> (crate::MarketClient<'static>, Address) {
+        setup_with_config(env, config(min_bet_amount))
+    }
+
+    fn setup_with_config(
+        env: &Env,
+        market_config: MarketConfig,
+    ) -> (crate::MarketClient<'static>, Address) {
         env.mock_all_auths();
         env.ledger().set(LedgerInfo {
             timestamp: 1_000,
@@ -2347,11 +2371,76 @@ mod min_bet_enforcement_tests {
             &factory,
             &1u64,
             &fight(env),
-            &config(min_bet_amount),
+            &market_config,
             &treasury,
         );
         let token_id = env.register_stellar_asset_contract(factory.clone());
         (client, token_id)
+    }
+
+    #[test]
+    fn normalizes_six_decimal_bet_before_market_calculations() {
+        let env = Env::default();
+        let mut market_config = config(1_000_000);
+        market_config.token_decimals = 6;
+        let (client, token_id) = setup_with_config(&env, market_config);
+        let bettor = Address::generate(&env);
+        let asset = StellarAssetClient::new(&env, &token_id);
+        asset.mint(&bettor, &100_000);
+
+        let bet = client.place_bet(
+            &bettor,
+            &BetSide::FighterA,
+            &100_000,
+            &token_id,
+            &0,
+        );
+
+        assert_eq!(bet.amount, 1_000_000);
+        assert_eq!(client.get_pool_sizes(), (1_000_000, 0, 0));
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &token_id).balance(&bettor),
+            0
+        );
+        assert_eq!(client.get_token_decimals(), 6);
+
+        let other_token = env.register_stellar_asset_contract(Address::generate(&env));
+        let other_bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &other_token).mint(&other_bettor, &100_000);
+        let result = client.try_place_bet(
+            &other_bettor,
+            &BetSide::FighterA,
+            &100_000,
+            &other_token,
+            &0,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            Ok(boxmeout_shared::errors::ContractError::MarketTokenMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_amounts_that_cannot_be_normalized_without_precision_loss() {
+        let env = Env::default();
+        let mut market_config = config(1);
+        market_config.token_decimals = 8;
+        let (client, token_id) = setup_with_config(&env, market_config);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &1);
+
+        let result = client.try_place_bet(
+            &bettor,
+            &BetSide::FighterA,
+            &1,
+            &token_id,
+            &0,
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            Ok(boxmeout_shared::errors::ContractError::InvalidTokenPrecision)
+        );
     }
 
     /// Bet exactly at min_bet_amount must succeed.
@@ -2470,6 +2559,8 @@ mod place_bet_boundary_fuzz_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2605,6 +2696,8 @@ mod get_all_bets_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2805,6 +2898,8 @@ mod market_lifecycle_tests {
             lock_before_secs: LOCK_BEFORE,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3214,6 +3309,8 @@ mod stale_oracle_reports_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3491,6 +3588,8 @@ mod reentrancy_regression_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3793,6 +3892,8 @@ mod event_emission_consistency_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4360,6 +4461,8 @@ mod slippage_bounds_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4588,6 +4691,8 @@ mod upgrade_safety_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4968,6 +5073,9 @@ mod claim_refund_integrity_tests {
             fee_bps: 200,
             lock_before_secs: LOCK_BEFORE_SECS,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -5208,6 +5316,9 @@ mod amm_slippage_tier8_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -6037,6 +6148,9 @@ mod oracle_two_of_three_tier8_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7004,6 +7118,9 @@ mod amm_slippage_tier10_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7336,7 +7453,7 @@ mod oracle_pending_reports_ttl_tests {
         assert_eq!(refund1, 50_000_000i128, "Bettor 1 must receive full 100% refund on cancelled market");
         assert_eq!(refund2, 50_000_000i128, "Bettor 2 must receive full 100% refund on cancelled market");
     }
-}
+    }
 
     fn data_bet_record(
         env: &Env,
@@ -7483,6 +7600,9 @@ mod oracle_two_of_three_tier10_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7770,6 +7890,9 @@ mod amm_slippage_tier12_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7970,6 +8093,9 @@ mod oracle_two_of_three_tier12_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8235,6 +8361,9 @@ mod amm_slippage_tier14_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8443,6 +8572,9 @@ mod oracle_two_of_three_tier14_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 

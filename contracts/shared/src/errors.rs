@@ -112,4 +112,8 @@ pub enum ContractError {
     // ── Slippage ────────────────────────────────────────────
     /// Computed shares out are below the caller's min_shares_out tolerance
     SlippageExceeded = 61,
+    /// Token precision is unsupported or an amount cannot be represented exactly
+    InvalidTokenPrecision = 62,
+    /// A market cannot accept more than one token contract
+    MarketTokenMismatch = 63,
 }

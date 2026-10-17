@@ -28,6 +28,7 @@ use boxmeout_shared::{
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 const STATE: &str = "STATE";
+const MARKET_TOKEN: &str = "MARKET_TOKEN";
 /// Prefix for the per-bettor bets key: (BET_PREFIX, bettor) -> Vec<BetRecord>.
 /// Keyed per-address so a lookup for one bettor doesn't deserialize every
 /// other bettor's bets (see issue #255).
@@ -89,6 +90,22 @@ pub struct Market;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 impl Market {
+    // Keep every pool in one token contract and one configured decimal scale.
+    fn require_market_token(env: &Env, token: &Address) -> Result<(), ContractError> {
+        let configured_token: Option<Address> =
+            env.storage().persistent().get(&MARKET_TOKEN);
+        match configured_token {
+            Some(configured_token) if configured_token != *token => {
+                Err(ContractError::MarketTokenMismatch)
+            }
+            Some(_) => Ok(()),
+            None => {
+                env.storage().persistent().set(&MARKET_TOKEN, token);
+                Ok(())
+            }
+        }
+    }
+
     /// Abort if the contract-level emergency pause is active.
     fn require_not_paused(env: &Env) -> Result<(), ContractError> {
         let paused: bool = env.storage().instance().get(&PAUSED).unwrap_or(false);
@@ -178,6 +195,11 @@ impl Market {
         env.storage()
             .persistent()
             .extend_ttl(&BETTOR_LIST, MAX_TTL, MAX_TTL);
+        if env.storage().persistent().has(&MARKET_TOKEN) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&MARKET_TOKEN, MAX_TTL, MAX_TTL);
+        }
         if env.storage().persistent().has(&OUTCOME_VERSION) {
             env.storage()
                 .persistent()
@@ -242,6 +264,9 @@ impl Market {
         factory.require_auth();
         if env.storage().persistent().has(&STATE) {
             return Err(ContractError::AlreadyInitialized);
+        }
+        if config.token_decimals > boxmeout_shared::math::MAX_TOKEN_DECIMALS {
+            return Err(ContractError::InvalidTokenPrecision);
         }
 
         // Map the tier u32 to an OptionalMarketTier variant.
@@ -331,10 +356,15 @@ impl Market {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
-        if amount < state.config.min_bet_amount {
+        let normalized_amount = boxmeout_shared::math::normalize_token_amount(
+            amount,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        if normalized_amount < state.config.min_bet_amount {
             return Err(ContractError::BelowMinimum);
         }
-        if amount > state.config.max_bet {
+        if normalized_amount > state.config.max_bet {
             return Err(ContractError::BetTooLarge);
         }
 
@@ -374,7 +404,7 @@ impl Market {
                 state.pool_a,
                 state.pool_b,
                 state.pool_draw,
-                amount,
+                normalized_amount,
                 side_byte,
             ) {
                 // Tier-aware slippage check.
@@ -399,20 +429,29 @@ impl Market {
         }
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
+        Self::require_market_token(&env, &token)?;
         let mut new_state = state.clone();
         match side {
-            BetSide::FighterA => new_state.pool_a += amount,
-            BetSide::FighterB => new_state.pool_b += amount,
-            BetSide::Draw => new_state.pool_draw += amount,
+            BetSide::FighterA => new_state.pool_a = new_state.pool_a
+                .checked_add(normalized_amount)
+                .ok_or(ContractError::InsufficientAmount)?,
+            BetSide::FighterB => new_state.pool_b = new_state.pool_b
+                .checked_add(normalized_amount)
+                .ok_or(ContractError::InsufficientAmount)?,
+            BetSide::Draw => new_state.pool_draw = new_state.pool_draw
+                .checked_add(normalized_amount)
+                .ok_or(ContractError::InsufficientAmount)?,
         }
-        new_state.total_pool += amount;
+        new_state.total_pool = new_state.total_pool
+            .checked_add(normalized_amount)
+            .ok_or(ContractError::InsufficientAmount)?;
         Self::save_state(&env, &new_state);
 
         let bet = BetRecord {
             bettor: bettor.clone(),
             market_id: new_state.market_id,
             side: side.clone(),
-            amount,
+            amount: normalized_amount,
             placed_at: env.ledger().timestamp(),
             claimed: false,
         };
@@ -477,7 +516,7 @@ impl Market {
                     state.pool_a.max(1),
                     state.pool_b.max(1),
                     state.pool_draw.max(1),
-                    amount,
+                    normalized_amount,
                     side_byte,
                 )
                 .map(|(_, imp)| imp)
@@ -509,7 +548,7 @@ impl Market {
                     state.pool_a.max(1),
                     state.pool_b.max(1),
                     state.pool_draw.max(1),
-                    amount,
+                    normalized_amount,
                     side_byte,
                 )
                 .map(|(s, _)| s)
@@ -558,14 +597,37 @@ impl Market {
             return Err(ContractError::MarketNotOpen);
         }
 
-        // All three sides must meet minimum seed amount
-        if amount_a < MIN_SEED_LIQUIDITY || amount_b < MIN_SEED_LIQUIDITY || amount_draw < MIN_SEED_LIQUIDITY {
+        let normalized_a = boxmeout_shared::math::normalize_token_amount(
+            amount_a,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let normalized_b = boxmeout_shared::math::normalize_token_amount(
+            amount_b,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let normalized_draw = boxmeout_shared::math::normalize_token_amount(
+            amount_draw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let total_in_raw = amount_a
+            .checked_add(amount_b)
+            .and_then(|v| v.checked_add(amount_draw))
+            .ok_or(ContractError::InsufficientAmount)?;
+
+        // All three sides must meet the one-token seed minimum.
+        if normalized_a < MIN_SEED_LIQUIDITY
+            || normalized_b < MIN_SEED_LIQUIDITY
+            || normalized_draw < MIN_SEED_LIQUIDITY
+        {
             return Err(ContractError::BelowMinimum);
         }
 
-        let total_in = amount_a
-            .checked_add(amount_b)
-            .and_then(|v| v.checked_add(amount_draw))
+        let total_in = normalized_a
+            .checked_add(normalized_b)
+            .and_then(|v| v.checked_add(normalized_draw))
             .ok_or(ContractError::InsufficientAmount)?;
 
         // Compute LP shares to mint
@@ -592,10 +654,15 @@ impl Market {
         }
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
-        state.pool_a = state.pool_a.saturating_add(amount_a);
-        state.pool_b = state.pool_b.saturating_add(amount_b);
-        state.pool_draw = state.pool_draw.saturating_add(amount_draw);
-        state.total_pool = state.total_pool.saturating_add(total_in);
+        Self::require_market_token(&env, &token)?;
+        state.pool_a = state.pool_a.checked_add(normalized_a)
+            .ok_or(ContractError::InsufficientAmount)?;
+        state.pool_b = state.pool_b.checked_add(normalized_b)
+            .ok_or(ContractError::InsufficientAmount)?;
+        state.pool_draw = state.pool_draw.checked_add(normalized_draw)
+            .ok_or(ContractError::InsufficientAmount)?;
+        state.total_pool = state.total_pool.checked_add(total_in)
+            .ok_or(ContractError::InsufficientAmount)?;
         Self::save_state(&env, &state);
 
         // Mint LP shares
@@ -615,15 +682,15 @@ impl Market {
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&provider, &env.current_contract_address(), &total_in);
+        token_client.transfer(&provider, &env.current_contract_address(), &total_in_raw);
 
         boxmeout_shared::emit_liquidity_added(
             &env,
             state.market_id,
             provider,
-            amount_a,
-            amount_b,
-            amount_draw,
+            normalized_a,
+            normalized_b,
+            normalized_draw,
             lp_shares,
         );
 
@@ -640,6 +707,8 @@ impl Market {
     /// - `NoBetsFound`: Provider has no LP position
     /// - `BelowMinimum`: lp_shares_to_burn is zero or negative
     /// - `InsufficientBalance`: Provider doesn't have enough LP shares
+    ///
+    /// Returns the paid amount in the shared seven-decimal calculation scale.
     ///
     /// # Security (CEI)
     /// 1. CHECKS: require_auth, pause guard, status, position exists, shares
@@ -697,9 +766,40 @@ impl Market {
                 .and_then(|v| v.checked_div(share_ratio_den))
                 .unwrap_or(0)
         } else { 0 };
-        let total_out = withdraw_a
-            .saturating_add(withdraw_b)
-            .saturating_add(withdraw_draw);
+        let withdraw_a_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            withdraw_a,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_b_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            withdraw_b,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_draw_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            withdraw_draw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_a_paid = boxmeout_shared::math::normalize_token_amount(
+            withdraw_a_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_b_paid = boxmeout_shared::math::normalize_token_amount(
+            withdraw_b_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let withdraw_draw_paid = boxmeout_shared::math::normalize_token_amount(
+            withdraw_draw_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let total_out = withdraw_a_paid
+            .checked_add(withdraw_b_paid)
+            .and_then(|v| v.checked_add(withdraw_draw_paid))
+            .ok_or(ContractError::InsufficientAmount)?;
 
         // Compute accrued fees using fee-per-share accumulator
         let fees_claimed = boxmeout_shared::amm::calc_claimable_lp_fees(
@@ -709,9 +809,10 @@ impl Market {
         );
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
-        state.pool_a = state.pool_a.saturating_sub(withdraw_a);
-        state.pool_b = state.pool_b.saturating_sub(withdraw_b);
-        state.pool_draw = state.pool_draw.saturating_sub(withdraw_draw);
+        Self::require_market_token(&env, &token)?;
+        state.pool_a = state.pool_a.saturating_sub(withdraw_a_paid);
+        state.pool_b = state.pool_b.saturating_sub(withdraw_b_paid);
+        state.pool_draw = state.pool_draw.saturating_sub(withdraw_draw_paid);
         state.total_pool = state.total_pool.saturating_sub(total_out);
         Self::save_state(&env, &state);
 
@@ -730,10 +831,27 @@ impl Market {
         Self::extend_market_ttl(&env);
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
-        let payout = total_out.saturating_add(fees_claimed);
-        if payout > 0 {
+        let fees_claimed_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            fees_claimed,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let fees_claimed_paid = boxmeout_shared::math::normalize_token_amount(
+            fees_claimed_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let total_out_raw = withdraw_a_raw
+            .checked_add(withdraw_b_raw)
+            .and_then(|v| v.checked_add(withdraw_draw_raw))
+            .and_then(|v| v.checked_add(fees_claimed_raw))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let payout = total_out
+            .checked_add(fees_claimed_paid)
+            .ok_or(ContractError::InsufficientAmount)?;
+        if total_out_raw > 0 {
             let token_client = token::Client::new(&env, &token);
-            token_client.transfer(&env.current_contract_address(), &provider, &payout);
+            token_client.transfer(&env.current_contract_address(), &provider, &total_out_raw);
         }
 
         boxmeout_shared::emit_liquidity_removed(
@@ -741,10 +859,10 @@ impl Market {
             state.market_id,
             provider,
             lp_shares_to_burn,
-            withdraw_a,
-            withdraw_b,
-            withdraw_draw,
-            fees_claimed,
+            withdraw_a_paid,
+            withdraw_b_paid,
+            withdraw_draw_paid,
+            fees_claimed_paid,
         );
 
         Ok(payout)
@@ -1187,7 +1305,9 @@ impl Market {
         let mut any_eligible = false;
         for bet in bets.iter() {
             if bet.side == winning_side && !bet.claimed {
-                bettor_stake += bet.amount;
+                bettor_stake = bettor_stake
+                    .checked_add(bet.amount)
+                    .ok_or(ContractError::InsufficientAmount)?;
                 any_eligible = true;
             }
         }
@@ -1220,8 +1340,29 @@ impl Market {
         } else {
             0
         };
+        let fee_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            fee,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let payout_raw = boxmeout_shared::math::denormalize_token_amount_floor(
+            payout,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let fee_paid = boxmeout_shared::math::normalize_token_amount(
+            fee_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+        let payout_paid = boxmeout_shared::math::normalize_token_amount(
+            payout_raw,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
+        Self::require_market_token(&env, &token)?;
         // Set reentrancy lock BEFORE any transfer
         env.storage().instance().set(&CLAIMING, &true);
 
@@ -1239,8 +1380,8 @@ impl Market {
         let receipt = ClaimReceipt {
             bettor: bettor.clone(),
             market_id: state.market_id,
-            amount_won: payout,
-            fee_deducted: fee,
+            amount_won: payout_paid,
+            fee_deducted: fee_paid,
             claimed_at: env.ledger().timestamp(),
         };
 
@@ -1253,12 +1394,12 @@ impl Market {
             .ok_or(ContractError::Unauthorized)?;
 
         // Transfer fee to treasury first
-        if fee > 0 {
-            token_client.transfer(&env.current_contract_address(), &treasury, &fee);
+        if fee_raw > 0 {
+            token_client.transfer(&env.current_contract_address(), &treasury, &fee_raw);
         }
         // Transfer payout to bettor
-        if payout > 0 {
-            token_client.transfer(&env.current_contract_address(), &bettor, &payout);
+        if payout_raw > 0 {
+            token_client.transfer(&env.current_contract_address(), &bettor, &payout_raw);
         }
 
         // ── CLEANUP ───────────────────────────────────────────────────────────
@@ -1273,6 +1414,7 @@ impl Market {
     // CLAIM REFUND  — fund-moving
     // =========================================================================
     /// Claims a full refund for a bettor when the market is cancelled.
+    /// Returns the refund in the shared seven-decimal calculation scale.
     ///
     /// # Errors
     /// - `InvalidMarketStatus`: Market is not cancelled
@@ -1308,7 +1450,9 @@ impl Market {
         let mut any_unclaimed = false;
         for bet in bets.iter() {
             if !bet.claimed {
-                refund_total += bet.amount;
+                refund_total = refund_total
+                    .checked_add(bet.amount)
+                    .ok_or(ContractError::InsufficientAmount)?;
                 any_unclaimed = true;
             }
         }
@@ -1316,7 +1460,14 @@ impl Market {
             return Err(ContractError::AlreadyClaimed);
         }
 
+        let refund_total_raw = boxmeout_shared::math::denormalize_token_amount(
+            refund_total,
+            state.config.token_decimals,
+        )
+        .ok_or(ContractError::InvalidTokenPrecision)?;
+
         // ── EFFECTS ───────────────────────────────────────────────────────────
+        Self::require_market_token(&env, &token)?;
         env.storage().instance().set(&CLAIMING, &true);
 
         let mut updated_bets = Vec::new(&env);
@@ -1332,7 +1483,7 @@ impl Market {
         // ── INTERACTIONS ──────────────────────────────────────────────────────
         let token_client = token::Client::new(&env, &token);
         if refund_total > 0 {
-            token_client.transfer(&env.current_contract_address(), &bettor, &refund_total);
+            token_client.transfer(&env.current_contract_address(), &bettor, &refund_total_raw);
         }
 
         // ── CLEANUP ───────────────────────────────────────────────────────────
@@ -1574,13 +1725,23 @@ impl Market {
         if state.total_pool == 0 {
             return (0, 0, 0);
         }
-        let odds_a = (state.pool_a * 10_000 / state.total_pool) as u32;
-        let odds_b = (state.pool_b * 10_000 / state.total_pool) as u32;
-        let odds_draw = (state.pool_draw * 10_000 / state.total_pool) as u32;
+        let odds_a = match state.pool_a.checked_mul(10_000) {
+            Some(value) => (value / state.total_pool) as u32,
+            None => return (0, 0, 0),
+        };
+        let odds_b = match state.pool_b.checked_mul(10_000) {
+            Some(value) => (value / state.total_pool) as u32,
+            None => return (0, 0, 0),
+        };
+        let odds_draw = match state.pool_draw.checked_mul(10_000) {
+            Some(value) => (value / state.total_pool) as u32,
+            None => return (0, 0, 0),
+        };
         (odds_a, odds_b, odds_draw)
     }
 
-    /// Estimates the payout for a hypothetical bet.
+    /// Estimates the payout for a hypothetical bet. `amount` is in native token
+    /// units; the returned amount uses the shared seven-decimal calculation scale.
     pub fn estimate_payout(env: Env, side: BetSide, amount: i128) -> i128 {
         let state = match Self::load_state(&env) {
             Ok(s) => s,
@@ -1589,12 +1750,31 @@ impl Market {
         if state.status != MarketStatus::Open {
             return 0;
         }
-        let (hypo_a, hypo_b, hypo_draw) = match side {
-            BetSide::FighterA => (state.pool_a + amount, state.pool_b, state.pool_draw),
-            BetSide::FighterB => (state.pool_a, state.pool_b + amount, state.pool_draw),
-            BetSide::Draw => (state.pool_a, state.pool_b, state.pool_draw + amount),
+        let amount = match boxmeout_shared::math::normalize_token_amount(
+            amount,
+            state.config.token_decimals,
+        ) {
+            Some(amount) if amount > 0 => amount,
+            _ => return 0,
         };
-        let hypo_total = state.total_pool + amount;
+        let (hypo_a, hypo_b, hypo_draw) = match side {
+            BetSide::FighterA => match state.pool_a.checked_add(amount) {
+                Some(pool_a) => (pool_a, state.pool_b, state.pool_draw),
+                None => return 0,
+            },
+            BetSide::FighterB => match state.pool_b.checked_add(amount) {
+                Some(pool_b) => (state.pool_a, pool_b, state.pool_draw),
+                None => return 0,
+            },
+            BetSide::Draw => match state.pool_draw.checked_add(amount) {
+                Some(pool_draw) => (state.pool_a, state.pool_b, pool_draw),
+                None => return 0,
+            },
+        };
+        let hypo_total = match state.total_pool.checked_add(amount) {
+            Some(total) => total,
+            None => return 0,
+        };
         let winning_pool = match side {
             BetSide::FighterA => hypo_a,
             BetSide::FighterB => hypo_b,
@@ -1603,9 +1783,21 @@ impl Market {
         if winning_pool == 0 {
             return 0;
         }
-        let fee = hypo_total * (state.config.fee_bps as i128) / 10_000;
-        let net_pool = hypo_total - fee;
-        amount * net_pool / winning_pool
+        let fee = match hypo_total
+            .checked_mul(state.config.fee_bps as i128)
+            .map(|fee| fee / 10_000)
+        {
+            Some(fee) => fee,
+            None => return 0,
+        };
+        let net_pool = match hypo_total.checked_sub(fee) {
+            Some(pool) => pool,
+            None => return 0,
+        };
+        amount
+            .checked_mul(net_pool)
+            .map(|payout| payout / winning_pool)
+            .unwrap_or(0)
     }
 
     /// Returns the number of unique bettors in this market.
@@ -1648,7 +1840,7 @@ impl Market {
         result
     }
 
-    /// Returns the current pool sizes for each outcome.
+    /// Returns current pool sizes for each outcome in the shared seven-decimal scale.
     pub fn get_pool_sizes(env: Env) -> (i128, i128, i128) {
         let state = match Self::load_state(&env) {
             Ok(s) => s,
@@ -1672,7 +1864,7 @@ impl Market {
         Ok(Self::load_state(&env)?.status)
     }
 
-    /// Returns the three pool sizes as `(pool_a, pool_b, pool_draw)`.
+    /// Returns the three normalized pool sizes as `(pool_a, pool_b, pool_draw)`.
     /// Alias for `get_pool_sizes` — returns `(0, 0, 0)` if not initialized.
     pub fn get_pools(env: Env) -> (i128, i128, i128) {
         match Self::load_state(&env) {
@@ -1713,16 +1905,22 @@ impl Market {
         }
     }
 
+    /// Returns the native token precision configured for this market.
+    pub fn get_token_decimals(env: Env) -> Result<u32, ContractError> {
+        Ok(Self::load_state(&env)?.config.token_decimals)
+    }
+
     /// Returns the live AMM odds (shares_out, impact_bps) for a hypothetical bet.
     ///
     /// Useful for frontends to display real-time odds before the bettor confirms.
     ///
     /// # Arguments
     /// * `side`   - 0 = FighterA, 1 = FighterB, 2 = Draw
-    /// * `amount` - Hypothetical bet amount in stroops
+    /// * `amount` - Hypothetical bet amount in native token units
     ///
     /// # Returns
-    /// `(shares_out, impact_bps)` — or `(0, 0)` if the AMM is not yet active.
+    /// `(shares_out, impact_bps)` using normalized token units, or `(0, 0)` if
+    /// the AMM is not yet active or the amount cannot be represented exactly.
     pub fn get_amm_odds(env: Env, side: u32, amount: i128) -> (i128, i128) {
         let state = match Self::load_state(&env) {
             Ok(s) => s,
@@ -1731,6 +1929,13 @@ impl Market {
         if state.pool_a <= 0 || state.pool_b <= 0 || state.pool_draw <= 0 || amount <= 0 {
             return (0, 0);
         }
+        let amount = match boxmeout_shared::math::normalize_token_amount(
+            amount,
+            state.config.token_decimals,
+        ) {
+            Some(amount) => amount,
+            None => return (0, 0),
+        };
         match boxmeout_shared::amm::compute_odds(
             state.pool_a,
             state.pool_b,

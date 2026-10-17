@@ -23,14 +23,14 @@
 /// Each tier in the AMM & Odds Calculation Pipeline enforces different constraints
 /// to match the expected market depth and bet volume:
 ///
-/// | Tier | min_liquidity_stroops | max_slippage_bps | Description             |
-/// |------|-----------------------|------------------|-------------------------|
-/// | 8    | 800_000_000           | 3_000            | Entry-level markets     |
-/// | 10   | 1_000_000_000         | 2_500            | Standard markets        |
-/// | 12   | 1_200_000_000         | 2_000            | Established markets     |
-/// | 14   | 1_400_000_000         | 1_500            | High-volume markets     |
+/// | Tier | min_liquidity_units | max_slippage_bps | Description             |
+/// |------|---------------------|------------------|-------------------------|
+/// | 8    | 800_000_000         | 3_000            | Entry-level markets     |
+/// | 10   | 1_000_000_000       | 2_500            | Standard markets        |
+/// | 12   | 1_200_000_000       | 2_000            | Established markets     |
+/// | 14   | 1_400_000_000       | 1_500            | High-volume markets     |
 pub struct TierParams {
-    /// Minimum total pool size (in stroops) required before slippage checks apply.
+    /// Minimum total pool size (in shared seven-decimal units) before slippage checks apply.
     /// Below this threshold the AMM is considered bootstrapping and checks are lenient.
     pub min_liquidity_stroops: i128,
     /// Maximum price impact per bet in basis points (1 bps = 0.01%).
@@ -78,7 +78,7 @@ pub fn tier_params(tier: u8) -> Option<TierParams> {
 ///
 /// # Arguments
 /// * `tier`       - Tier byte (8, 10, 12, or 14)
-/// * `total_pool` - Current total pool size in stroops
+/// * `total_pool` - Current total pool size in the shared seven-decimal scale
 /// * `impact_bps` - Price impact of the bet in basis points (from `compute_odds`)
 pub fn check_tier_slippage(tier: u8, total_pool: i128, impact_bps: i128) -> bool {
     match tier_params(tier) {
@@ -144,10 +144,10 @@ pub fn isqrt(n: i128) -> Option<i128> {
 /// - We solve for shares_out using the invariant
 ///
 /// # Arguments
-/// * `pool_a` - Current pool for side A (in stroops)
-/// * `pool_b` - Current pool for side B (in stroops)
-/// * `pool_draw` - Current pool for Draw outcome (in stroops)
-/// * `bet_amount` - Size of the bet in stroops
+/// * `pool_a` - Current pool for side A (shared seven-decimal units)
+/// * `pool_b` - Current pool for side B (shared seven-decimal units)
+/// * `pool_draw` - Current pool for Draw outcome (shared seven-decimal units)
+/// * `bet_amount` - Size of the bet in shared seven-decimal units
 /// * `side` - Which outcome: 0 = FighterA, 1 = FighterB, 2 = Draw
 ///
 /// # Returns
