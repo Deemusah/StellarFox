@@ -76,6 +76,8 @@ pub enum ContractError {
     DisputeCooldownActive = 34,
     /// finalize_resolution called on a market not in ResolutionPending state
     ResolutionNotPending = 35,
+    /// Outcome schema version is unsupported or does not match the market
+    InvalidOutcomeVersion = 36,
 
     // ── Treasury ───────────────────────────────────────────
     /// Fee withdrawals are temporarily paused

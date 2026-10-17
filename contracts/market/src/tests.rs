@@ -1567,6 +1567,12 @@ mod oracle_sig_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         msg
     }
 
@@ -3216,6 +3222,7 @@ mod stale_oracle_reports_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, "FURY-USYK-2025"),
             outcome: Outcome::FighterA,
+            outcome_version: 2,
             reported_at: submitted_at,
             submitted_at,
             signature: soroban_sdk::BytesN::from_array(env, &[0u8; 64]),
@@ -5055,6 +5062,7 @@ mod claim_refund_integrity_tests {
             let stale = OracleReport {
                 match_id: match_id.clone(),
                 outcome: Outcome::FighterA,
+                outcome_version: 2,
                 reported_at: 0,
                 submitted_at: 0,
                 signature: soroban_sdk::BytesN::from_array(&env, &[0u8; 64]),
@@ -5064,6 +5072,7 @@ mod claim_refund_integrity_tests {
             let fresh = OracleReport {
                 match_id: match_id.clone(),
                 outcome: Outcome::FighterA,
+                outcome_version: 2,
                 reported_at: 300_000,
                 submitted_at: 300_000,
                 signature: soroban_sdk::BytesN::from_array(&env, &[0u8; 64]),
@@ -6052,7 +6061,7 @@ mod oracle_two_of_three_tier8_tests {
     }
 
     /// Builds the canonical signed message exactly as the contract does:
-    /// concat(match_id XDR, outcome_byte, reported_at big-endian).
+    /// concat(match_id XDR, outcome byte, timestamp big-endian, version big-endian).
     fn sign_report(env: &Env, sk: &SigningKey, match_id: &soroban_sdk::String, outcome: &Outcome, reported_at: u64) -> BytesN<64> {
 
     fn sign_report(
@@ -6067,6 +6076,12 @@ mod oracle_two_of_three_tier8_tests {
         msg.append(&match_id.clone().to_xdr(env));
         msg.push_back(outcome_byte(outcome));
         for b in reported_at.to_be_bytes().iter() {
+            msg.push_back(*b);
+        }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
             msg.push_back(*b);
         }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
@@ -6084,6 +6099,7 @@ mod oracle_two_of_three_tier8_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(env, sk, &soroban_sdk::String::from_str(env, MATCH_ID), outcome, reported_at),
@@ -7493,6 +7509,12 @@ mod oracle_two_of_three_tier10_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -7508,6 +7530,7 @@ mod oracle_two_of_three_tier10_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -7973,6 +7996,12 @@ mod oracle_two_of_three_tier12_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -7988,6 +8017,7 @@ mod oracle_two_of_three_tier12_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -8439,6 +8469,12 @@ mod oracle_two_of_three_tier14_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -8454,6 +8490,7 @@ mod oracle_two_of_three_tier14_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -8692,6 +8729,7 @@ mod oracle_pending_reports_ttl_tiers_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, "TTL-TEST-TIERS"),
             outcome: Outcome::FighterA,
+            outcome_version: 2,
             reported_at: submitted_at,
             submitted_at,
             signature: soroban_sdk::BytesN::from_array(env, &[0u8; 64]),

@@ -21,7 +21,8 @@ use boxmeout_shared::{
     types::{
         BetRecord, BetSide, ClaimReceipt, Config, FightDetails, LiquidityPosition, MarketConfig,
         MarketState, MarketStatus, OptionalMarketTier, OptionalOracleRole, OptionalOutcome,
-        OracleReport, OracleRole, Outcome,
+        OracleReport, OracleRole, Outcome, VersionedOutcome, CURRENT_OUTCOME_VERSION,
+        LEGACY_OUTCOME_VERSION,
     },
 };
 
@@ -45,6 +46,10 @@ const REPORT_TTL: u64 = 172_800;
 /// Ledger number at which the dispute cooldown window expires for a ResolutionPending market.
 /// Written when consensus is reached and cleared when finalize_resolution completes.
 const COOLDOWN_END_LEDGER: &str = "COOLDOWN_END";
+/// Schema version for this market's persisted outcome.
+const OUTCOME_VERSION: &str = "OUTCOME_VERSION";
+/// Version-tagged outcome retained separately to preserve MarketState's storage ABI.
+const VERSIONED_OUTCOME: &str = "VERSIONED_OUTCOME";
 /// Default dispute cooldown in ledgers when market config does not specify one.
 /// 720 ledgers × ~5 s/ledger ≈ 1 hour.
 const DEFAULT_DISPUTE_COOLDOWN_LEDGERS: u32 = 720;
@@ -173,6 +178,16 @@ impl Market {
         env.storage()
             .persistent()
             .extend_ttl(&BETTOR_LIST, MAX_TTL, MAX_TTL);
+        if env.storage().persistent().has(&OUTCOME_VERSION) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&OUTCOME_VERSION, MAX_TTL, MAX_TTL);
+        }
+        if env.storage().persistent().has(&VERSIONED_OUTCOME) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&VERSIONED_OUTCOME, MAX_TTL, MAX_TTL);
+        }
     }
 
     fn lp_key(env: &Env, provider: &Address) -> (Symbol, Address) {
@@ -254,6 +269,9 @@ impl Market {
             tier: market_tier,
         };
         env.storage().persistent().set(&STATE, &state);
+        env.storage()
+            .persistent()
+            .set(&OUTCOME_VERSION, &CURRENT_OUTCOME_VERSION);
         env.storage().persistent().set(&FACTORY, &factory);
         env.storage().persistent().set(&TREASURY, &treasury);
         env.storage()
@@ -811,6 +829,15 @@ impl Market {
         if state.status != MarketStatus::Locked {
             return Err(ContractError::InvalidMarketStatus);
         }
+        let market_outcome_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&OUTCOME_VERSION)
+            .unwrap_or(LEGACY_OUTCOME_VERSION);
+        boxmeout_shared::validate_report_outcome_version(
+            market_outcome_version,
+            report.outcome_version,
+        )?;
 
         if env.ledger().timestamp() < state.fight.scheduled_at {
             return Err(ContractError::MarketNotStarted);
@@ -830,7 +857,7 @@ impl Market {
             return Err(ContractError::InvalidOracleSignature);
         }
 
-        // Verify Ed25519 signature over concat(match_id_bytes, outcome_byte, reported_at_be)
+        // Verify Ed25519 signature over match_id, outcome, timestamp, and schema version.
         // Use the authoritative key from the whitelist — NOT report.pub_key — to prevent
         // a malicious oracle from substituting a different key in the report payload.
         {
@@ -847,6 +874,9 @@ impl Market {
             msg.append(&report.match_id.clone().to_xdr(&env));
             msg.push_back(outcome_byte);
             for b in report.reported_at.to_be_bytes().iter() {
+                msg.push_back(*b);
+            }
+            for b in report.outcome_version.to_be_bytes().iter() {
                 msg.push_back(*b);
             }
             // whitelisted_pub_key is the raw 32-byte Ed25519 key registered by the admin.
@@ -930,6 +960,13 @@ impl Market {
         // cooldown window to raise a dispute before payouts are unlocked.
         if matching_count >= 2 {
             state.outcome = OptionalOutcome::Some(report.outcome.clone());
+            env.storage().persistent().set(
+                &VERSIONED_OUTCOME,
+                &VersionedOutcome {
+                    version: report.outcome_version,
+                    outcome: report.outcome.clone(),
+                },
+            );
 
             // Determine cooldown length (ledgers). Fall back to the default if
             // the market was created before dispute_cooldown_ledgers was added.
@@ -1038,6 +1075,23 @@ impl Market {
         // Only valid to call when the market is waiting for the cooldown to expire.
         if state.status != MarketStatus::ResolutionPending {
             return Err(ContractError::ResolutionNotPending);
+        }
+
+        let market_outcome_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&OUTCOME_VERSION)
+            .unwrap_or(LEGACY_OUTCOME_VERSION);
+        boxmeout_shared::validate_outcome_version(market_outcome_version)?;
+        let versioned_outcome: VersionedOutcome = env
+            .storage()
+            .persistent()
+            .get(&VERSIONED_OUTCOME)
+            .ok_or(ContractError::InvalidOutcome)?;
+        if versioned_outcome.version != market_outcome_version
+            || state.outcome != OptionalOutcome::Some(versioned_outcome.outcome.clone())
+        {
+            return Err(ContractError::InvalidOutcomeVersion);
         }
 
         // Check that the cooldown window has elapsed.
@@ -1399,9 +1453,22 @@ impl Market {
         if state.status != MarketStatus::Disputed {
             return Err(ContractError::InvalidMarketStatus);
         }
+        let outcome_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&OUTCOME_VERSION)
+            .unwrap_or(LEGACY_OUTCOME_VERSION);
+        boxmeout_shared::validate_outcome_version(outcome_version)?;
 
         // EFFECTS
         state.outcome = OptionalOutcome::Some(final_outcome.clone());
+        env.storage().persistent().set(
+            &VERSIONED_OUTCOME,
+            &VersionedOutcome {
+                version: outcome_version,
+                outcome: final_outcome.clone(),
+            },
+        );
         state.status = MarketStatus::Resolved;
         state.resolved_at = env.ledger().timestamp();
         state.oracle_used = OptionalOracleRole::Some(OracleRole::Admin);
@@ -1414,6 +1481,41 @@ impl Market {
         Ok(())
     }
 
+    /// Migrates a legacy market's stored outcome schema. The migration is
+    /// deterministic and permissionless; pending legacy reports are discarded
+    /// because their serialized schema and signatures predate version tagging.
+    pub fn migrate_outcome_version(
+        env: Env,
+        target_version: u32,
+    ) -> Result<(), ContractError> {
+        let source_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&OUTCOME_VERSION)
+            .unwrap_or(LEGACY_OUTCOME_VERSION);
+        let state = Self::load_state(&env)?;
+        if let OptionalOutcome::Some(outcome) = state.outcome {
+            let migrated = boxmeout_shared::migrate_outcome_version(
+                &VersionedOutcome {
+                    version: source_version,
+                    outcome,
+                },
+                target_version,
+            )?;
+            env.storage().persistent().set(&VERSIONED_OUTCOME, &migrated);
+        } else if source_version != LEGACY_OUTCOME_VERSION
+            || target_version != CURRENT_OUTCOME_VERSION
+        {
+            return Err(ContractError::InvalidOutcomeVersion);
+        }
+        env.storage().persistent().set(&OUTCOME_VERSION, &target_version);
+        env.storage()
+            .persistent()
+            .set(&PENDING_REPORTS, &Map::<Address, OracleReport>::new(&env));
+        Self::extend_market_ttl(&env);
+        Ok(())
+    }
+
     // =========================================================================
     // READ-ONLY FUNCTIONS
     // =========================================================================
@@ -1421,6 +1523,32 @@ impl Market {
     /// Returns the current state of the market.
     pub fn get_state(env: Env) -> Result<MarketState, ContractError> {
         Self::load_state(&env)
+    }
+
+    /// Returns the current outcome together with its schema version.
+    pub fn get_versioned_outcome(env: Env) -> Result<VersionedOutcome, ContractError> {
+        let version: u32 = env
+            .storage()
+            .persistent()
+            .get(&OUTCOME_VERSION)
+            .unwrap_or(LEGACY_OUTCOME_VERSION);
+        let versioned: Option<VersionedOutcome> = env
+            .storage()
+            .persistent()
+            .get(&VERSIONED_OUTCOME);
+        if let Some(outcome) = versioned {
+            return if outcome.version == version {
+                Ok(outcome)
+            } else {
+                Err(ContractError::InvalidOutcomeVersion)
+            };
+        }
+
+        let state = Self::load_state(&env)?;
+        match state.outcome {
+            OptionalOutcome::Some(outcome) => Ok(VersionedOutcome { version, outcome }),
+            OptionalOutcome::None => Err(ContractError::InvalidOutcome),
+        }
     }
 
     /// Returns all bets placed by a specific bettor.

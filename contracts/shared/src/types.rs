@@ -56,6 +56,19 @@ pub enum Outcome {
     NoContest, // Fight invalidated (DQ, early stop, etc.)
 }
 
+/// Current schema for persisted and oracle-reported outcomes.
+pub const CURRENT_OUTCOME_VERSION: u32 = 2;
+/// Schema used by markets created before outcome versioning was introduced.
+pub const LEGACY_OUTCOME_VERSION: u32 = 1;
+
+/// Outcome value tagged with the schema used to encode it.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VersionedOutcome {
+    pub version: u32,
+    pub outcome: Outcome,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BetSide {
@@ -216,18 +229,21 @@ pub struct MarketState {
     pub tier: OptionalMarketTier,
 }
 
-/// Signed result report submitted by an oracle.
+/// Signed result report submitted by an oracle. The schema version is included
+/// in the signed payload together with the match, result, and report timestamp.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct OracleReport {
     pub match_id: String,
     pub outcome: Outcome,
+    /// Schema version used by `outcome`.
+    pub outcome_version: u32,
     /// Unix timestamp when the oracle submitted this report
     pub reported_at: u64,
     /// Ledger timestamp when the report was stored on-chain (set by the contract).
     /// Used by clear_stale_reports to evict partial reports older than REPORT_TTL.
     pub submitted_at: u64,
-    /// Ed25519 signature over concat(match_id_bytes, outcome_byte, reported_at_be)
+    /// Ed25519 signature over concat(match_id XDR, outcome byte, timestamp BE, version BE)
     pub signature: BytesN<64>,
     /// Stellar address corresponding to the oracle signing keypair
     pub oracle_address: Address,
