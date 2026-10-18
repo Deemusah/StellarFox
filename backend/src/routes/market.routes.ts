@@ -8,12 +8,15 @@ import {
     getMarketOdds,
     streamMarketOdds,
     getMarketStats,
+    getMarketAnalytics,
+    getMarketRecommendations,
     getPlatformStats,
     resolveMarket,
     simulatePayout,
     simulatePayoutValidation,
 } from '../api/controllers/MarketController';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
+import { requireAuth } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -54,6 +57,42 @@ const router = Router();
  *         description: Invalid parameters (limit exceeds maximum of 200)
  */
 router.get('/', listMarketsValidation, listMarkets);
+
+/**
+ * @swagger
+ * /markets/stats:
+ *   get:
+ *     summary: Get aggregated market statistics
+ *     tags: [Markets]
+ *     responses:
+ *       200:
+ *         description: Platform-wide market, volume, bettor, and category statistics
+ */
+router.get('/stats', getMarketAnalytics);
+
+/**
+ * @swagger
+ * /markets/recommendations:
+ *   get:
+ *     summary: Get personalized open-market recommendations
+ *     tags: [Markets]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Ranked open markets based on betting history and popularity
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/recommendations', requireAuth, getMarketRecommendations);
 
 /**
  * @swagger

@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS oracle_reports (
 CREATE TABLE IF NOT EXISTS disputes (
   id               SERIAL PRIMARY KEY,
   market_id        TEXT        NOT NULL REFERENCES markets(market_id),
+  user_id          TEXT,
   reason           TEXT        NOT NULL,
+  evidence_url     TEXT,
   status           TEXT        NOT NULL DEFAULT 'open',
   admin_notes      TEXT,
   final_outcome    TEXT,

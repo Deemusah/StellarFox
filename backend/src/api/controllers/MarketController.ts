@@ -162,6 +162,29 @@ export async function getMarketStats(req: Request, res: Response, next: NextFunc
   }
 }
 
+export async function getMarketAnalytics(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const analytics = await MarketService.getMarketAnalytics();
+    res.status(200).json(analytics);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getMarketRecommendations(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const userId = (req as Request & { userId?: string }).userId;
+    if (!userId) throw new AppError(401, 'Authentication required');
+
+    const limitSchema = z.coerce.number().int().min(1).max(50).default(10);
+    const limit = limitSchema.parse(req.query.limit);
+    const recommendations = await MarketService.getRecommendedMarkets(userId, limit);
+    res.status(200).json(recommendations);
+  } catch (err) {
+    next(err);
+  }
+}
+
 /**
  * GET /api/markets/:market_id/odds
  *

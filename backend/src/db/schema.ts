@@ -157,6 +157,7 @@ export const disputes = pgTable(
     market_id: text('market_id').notNull().references(() => markets.market_id),
     user_id: text('user_id'),
     reason: text('reason').notNull(),
+    evidence_url: text('evidence_url'),
     status: text('status').default('open'),
     admin_notes: text('admin_notes'),
     final_outcome: text('final_outcome'),
@@ -177,6 +178,7 @@ export const users = pgTable(
     id: text('id').primaryKey(),
     email: text('email').notNull().unique(),
     password_hash: text('password_hash').notNull(),
+    stellar_address: text('stellar_address'),
     email_verified: boolean('email_verified').default(false),
     two_factor_enabled: boolean('two_factor_enabled').default(false),
     two_factor_secret: text('two_factor_secret'), // AES-GCM encrypted
