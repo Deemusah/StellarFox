@@ -15,6 +15,7 @@ import { validateBody, validateParams, validateQuery } from '../api/middleware/v
 import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
+import { ERROR_CODES } from '../constants/errorCodes';
 
 const router = Router();
 
@@ -77,6 +78,14 @@ router.post(
       }
 
       const betAmountBig = BigInt(amount);
+      const minBetAmountBig = BigInt(market.min_bet_amount ?? '1000000');
+      if (betAmountBig < minBetAmountBig) {
+        throw AppError.badRequest(
+          `Bet amount must be at least ${minBetAmountBig} stroops`,
+          ERROR_CODES.BET_BELOW_MINIMUM,
+        );
+      }
+
       const totalPoolBig = BigInt(market.total_pool ?? '0');
       const sidePoolCol = side === 'fighter_a' ? 'pool_a' : side === 'fighter_b' ? 'pool_b' : 'pool_draw';
       const currentSidePoolBig = BigInt(market[sidePoolCol] ?? '0');
