@@ -102,6 +102,8 @@ pub enum ContractError {
     WasmHashNotSet = 53,
     /// Oracle address is not whitelisted
     OracleNotWhitelisted = 54,
+    /// Token address is not supported by the treasury
+    TokenNotWhitelisted = 55,
 
     // ── Reentrancy ─────────────────────────────────────────
     /// A claim or refund transfer is already in progress

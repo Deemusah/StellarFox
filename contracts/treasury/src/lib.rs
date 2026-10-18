@@ -33,6 +33,7 @@ use boxmeout_shared::{
 // ── Persistent Storage Keys ──────────────────────────────────────────────────
 const ADMIN: &str                        = "ADMIN";
 const BET_TOKEN: &str                    = "BET_TOKEN";
+const SUPPORTED_TOKENS: &str              = "SUPPORTED_TOKENS";             // Map<Address, bool>
 const FACTORY: &str                      = "FACTORY";
 const ACCUMULATED_FEES: &str             = "ACCUMULATED_FEES";             // Map<Address, i128>
 const ACCUMULATED_FEES_BY_MARKET: &str   = "ACCUMULATED_FEES_BY_MARKET";  // Map<u64, Map<Address, i128>>
@@ -65,6 +66,18 @@ impl Treasury {
             .ok_or(ContractError::Unauthorized)?;
         if *caller != admin {
             return Err(ContractError::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn require_supported_token(env: &Env, token: &Address) -> Result<(), ContractError> {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(env));
+        if !supported.get(token.clone()).unwrap_or(false) {
+            return Err(ContractError::TokenNotWhitelisted);
         }
         Ok(())
     }
@@ -185,6 +198,9 @@ impl Treasury {
         }
         env.storage().persistent().set(&ADMIN, &admin);
         env.storage().persistent().set(&BET_TOKEN, &bet_token);
+        let mut supported_tokens = Map::<Address, bool>::new(&env);
+        supported_tokens.set(bet_token.clone(), true);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported_tokens);
         env.storage().persistent().set(&FACTORY, &factory);
         env.storage().persistent().set(&WITHDRAWAL_LIMIT, &withdrawal_limit);
         env.storage().persistent().set(&ACCUMULATED_FEES, &Map::<Address, i128>::new(&env));
@@ -251,6 +267,68 @@ impl Treasury {
         Ok(())
     }
 
+    /// Adds a token to the set of assets supported by the treasury.
+    pub fn add_supported_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.set(token, true);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported);
+        Ok(())
+    }
+
+    /// Removes a token from the set of assets supported by the treasury.
+    pub fn remove_supported_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.remove(token);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported);
+        Ok(())
+    }
+
+    pub fn is_token_supported(env: Env, token: Address) -> bool {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.get(token).unwrap_or(false)
+    }
+
+    pub fn get_supported_tokens(env: Env) -> Vec<Address> {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        let mut tokens = Vec::new(&env);
+        for (token, is_supported) in supported.iter() {
+            if is_supported {
+                tokens.push_back(token);
+            }
+        }
+        tokens
+    }
+
     /// Deposits fees from an approved market.
     pub fn deposit_fees(
         env: Env,
@@ -271,6 +349,7 @@ impl Treasury {
         if !markets.contains(market.clone()) {
             return Err(ContractError::MarketNotApproved);
         }
+        Self::require_supported_token(&env, &token)?;
 
         let mut fees: Map<Address, i128> = env
             .storage()
@@ -311,6 +390,7 @@ impl Treasury {
     ) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        Self::require_supported_token(&env, &token)?;
 
         if amount < MIN_WITHDRAWAL {
             return Err(ContractError::BelowMinimum);
@@ -392,6 +472,7 @@ impl Treasury {
     ) -> Result<i128, ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        Self::require_supported_token(&env, &token)?;
 
         Self::acquire_fee_lock(&env)?;
 
@@ -599,6 +680,7 @@ impl Treasury {
     pub fn extend_ttl(env: Env) {
         env.storage().persistent().extend_ttl(&ADMIN, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&BET_TOKEN, 518_400, 518_400);
+        env.storage().persistent().extend_ttl(&SUPPORTED_TOKENS, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&FACTORY, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&WITHDRAWAL_LIMIT, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&ACCUMULATED_FEES, 518_400, 518_400);
@@ -723,5 +805,50 @@ mod tests {
         assert_eq!(client.get_audit_log_len(), log.len() as u64);
         let entry = client.get_audit_entry(&0).unwrap();
         assert_eq!(entry.id, 0);
+    }
+
+    #[test]
+    fn whitelist_is_initialized_and_admin_can_manage_tokens() {
+        let (env, client, admin, _market, bet_token, _) = setup(10_000_000);
+        let another_token = env.register_stellar_asset_contract(admin.clone());
+
+        assert!(client.is_token_supported(&bet_token));
+        assert_eq!(client.get_supported_tokens().len(), 1);
+
+        client.add_supported_token(&admin, &another_token);
+        assert!(client.is_token_supported(&another_token));
+        assert_eq!(client.get_supported_tokens().len(), 2);
+
+        client.remove_supported_token(&admin, &another_token);
+        assert!(!client.is_token_supported(&another_token));
+        assert_eq!(client.get_supported_tokens().len(), 1);
+    }
+
+    #[test]
+    fn non_admin_cannot_manage_supported_tokens() {
+        let (env, client, _admin, _market, _bet_token, _) = setup(10_000_000);
+        let non_admin = Address::generate(&env);
+        let another_token = env.register_stellar_asset_contract(non_admin.clone());
+
+        let result = client.try_add_supported_token(&non_admin, &another_token);
+        assert_eq!(result.unwrap_err(), Ok(ContractError::Unauthorized));
+    }
+
+    #[test]
+    fn unsupported_tokens_are_rejected_for_deposit_withdrawal_and_drain() {
+        let (env, client, admin, market, _bet_token, _) = setup(10_000_000);
+        let unsupported = env.register_stellar_asset_contract(admin.clone());
+        StellarAssetClient::new(&env, &unsupported).mint(&market, &10_000_000);
+
+        let deposit = client.try_deposit_fees(&market, &unsupported, &10_000_000);
+        assert_eq!(deposit.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+
+        let destination = Address::generate(&env);
+        let withdrawal = client.try_withdraw_fees(&admin, &unsupported, &10_000_000, &destination);
+        assert_eq!(withdrawal.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+
+        let drain = client.try_drain_fees(&admin, &unsupported, &destination);
+        assert_eq!(drain.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+        assert_eq!(client.get_accumulated_fees(&unsupported), 0);
     }
 }
