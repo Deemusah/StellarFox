@@ -66,6 +66,11 @@ export const cronResetTokensDeleted = new Counter({
   help: 'Total expired password_reset_tokens rows deleted by cleanup cron',
 });
 
+export const cronPredictionsDeleted = new Counter({
+  name: 'cron_predictions_deleted_total',
+  help: 'Total expired prediction rows deleted by cleanup cron',
+});
+
 export const cronNotificationsSoftDeleted = new Counter({
   name: 'cron_notifications_soft_deleted_total',
   help: 'Total notification_jobs rows soft-deleted by cleanup cron',

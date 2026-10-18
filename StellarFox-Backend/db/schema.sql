@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS bets (
   amount           NUMERIC     NOT NULL,
   amount_xlm       NUMERIC     NOT NULL DEFAULT 0,
   placed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at       TIMESTAMPTZ,
   claimed          BOOLEAN     NOT NULL DEFAULT FALSE,
   claimed_at       TIMESTAMPTZ,
   payout           NUMERIC,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS bets (
 -- Indexes for bets table
 CREATE INDEX IF NOT EXISTS bets_market_id_idx ON bets(market_id);
 CREATE INDEX IF NOT EXISTS bets_bettor_address_idx ON bets(bettor_address);
+CREATE INDEX IF NOT EXISTS bets_expires_at_idx ON bets(expires_at);
 CREATE INDEX IF NOT EXISTS bets_market_id_claimed_idx ON bets(market_id, claimed);
 CREATE UNIQUE INDEX IF NOT EXISTS bets_tx_hash_idx ON bets(tx_hash);
 

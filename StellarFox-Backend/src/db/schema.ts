@@ -57,6 +57,7 @@ export const bets = pgTable(
     amount: numeric('amount').notNull(),
     amount_xlm: numeric('amount_xlm').default('0'),
     placed_at: timestamp('placed_at', { withTimezone: true }).defaultNow(),
+    expires_at: timestamp('expires_at', { withTimezone: true }),
     claimed: boolean('claimed').default(false),
     claimed_at: timestamp('claimed_at', { withTimezone: true }),
     payout: numeric('payout'),
@@ -66,6 +67,7 @@ export const bets = pgTable(
   (table) => ({
     market_id_idx: index('bets_market_id_idx').on(table.market_id),
     bettor_address_idx: index('bets_bettor_address_idx').on(table.bettor_address),
+    expires_at_idx: index('bets_expires_at_idx').on(table.expires_at),
     market_id_claimed_idx: index('bets_market_id_claimed_idx').on(table.market_id, table.claimed),
     tx_hash_idx: uniqueIndex('bets_tx_hash_idx').on(table.tx_hash),
   }),

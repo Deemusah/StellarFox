@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import {
   cronSessionsDeleted,
   cronResetTokensDeleted,
+  cronPredictionsDeleted,
   cronNotificationsSoftDeleted,
   cronDistributionsArchived,
   cronBlockchainEventsDeleted,
@@ -18,6 +19,7 @@ const BLOCKCHAIN_EVENTS_RETENTION_INTERVAL = '90 days';
 export interface CronDbAdapter {
   deleteExpiredSessions(): Promise<number>;
   deleteExpiredResetTokens(): Promise<number>;
+  deleteExpiredPredictions(): Promise<number>;
   softDeleteOldNotifications(): Promise<number>;
   archiveFailedDistributions(): Promise<number>;
   writeAuditLog(action: string, details: Record<string, unknown>): Promise<void>;
@@ -37,6 +39,13 @@ const defaultAdapter: CronDbAdapter = {
   async deleteExpiredResetTokens() {
     const result = await pool.query(
       `DELETE FROM password_reset_tokens WHERE expires_at < NOW()`,
+    );
+    return result.rowCount ?? 0;
+  },
+
+  async deleteExpiredPredictions() {
+    const result = await pool.query(
+      `DELETE FROM bets WHERE expires_at IS NOT NULL AND expires_at < NOW()`,
     );
     return result.rowCount ?? 0;
   },
@@ -118,6 +127,16 @@ export async function deleteExpiredResetTokens(): Promise<number> {
   cronResetTokensDeleted.inc(count);
   await adapter.writeAuditLog('session_cleanup', {
     deleted_reset_tokens: count,
+    run_at: new Date().toISOString(),
+  });
+  return count;
+}
+
+export async function deleteExpiredPredictions(): Promise<number> {
+  const count = await adapter.deleteExpiredPredictions();
+  cronPredictionsDeleted.inc(count);
+  await adapter.writeAuditLog('prediction_cleanup', {
+    deleted_predictions: count,
     run_at: new Date().toISOString(),
   });
   return count;

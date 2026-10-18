@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import {
   deleteExpiredSessions,
   deleteExpiredResetTokens,
+  deleteExpiredPredictions,
   softDeleteOldNotifications,
   archiveFailedDistributions,
   cleanupOldBlockchainEvents,
@@ -32,6 +33,14 @@ export function startCleanupCron(): void {
   });
 
   cron.schedule('0 * * * *', cleanupResetTokensWithLock);
+
+  // Hourly — expired predictions
+  const cleanupPredictionsWithLock = withDistributedLock('cleanupPredictions', 90 * 60, async () => {
+    const count = await deleteExpiredPredictions();
+    logger.info({ count }, 'cleanupPredictions: completed');
+  });
+
+  cron.schedule('0 * * * *', cleanupPredictionsWithLock);
 
   // Daily at 02:00 — soft-delete old notifications
   // Lock TTL: 2 hours (longer than daily interval margin)
