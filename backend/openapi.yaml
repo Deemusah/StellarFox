@@ -130,6 +130,29 @@ components:
         average_bet_xlm:  { type: number }
         total_pooled_xlm: { type: number }
 
+    ProbabilitySnapshot:
+      type: object
+      properties:
+        market_id:        { type: string }
+        sampled_at:       { type: string, format: date-time }
+        source:           { type: string, enum: [interval, event] }
+        probability_a:    { type: number, minimum: 0, maximum: 1 }
+        probability_b:    { type: number, minimum: 0, maximum: 1 }
+        probability_draw: { type: number, minimum: 0, maximum: 1 }
+        pool_a:           { type: string }
+        pool_b:           { type: string }
+        pool_draw:        { type: string }
+        total_pool:       { type: string }
+
+    ProbabilityHistory:
+      type: object
+      required: [market_id, snapshots]
+      properties:
+        market_id: { type: string }
+        snapshots:
+          type: array
+          items: { $ref: '#/components/schemas/ProbabilitySnapshot' }
+
     SimulatePayout:
       type: object
       properties:
@@ -1391,6 +1414,55 @@ paths:
               schema: { $ref: '#/components/schemas/MarketStats' }
         '400':
           description: Invalid market ID format
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse400' }
+        '404':
+          description: Market not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse429' }
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse500' }
+
+  /api/markets/{market_id}/probabilities:
+    get:
+      summary: Get historical implied probabilities for a market
+      operationId: getMarketProbabilityHistory
+      tags: [Markets]
+      parameters:
+        - name: market_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        '200':
+          description: Probability history in chronological order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProbabilityHistory' }
+        '400':
+          description: Invalid probability history query parameters
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse400' }

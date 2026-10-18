@@ -23,6 +23,23 @@ CREATE TABLE IF NOT EXISTS markets (
   ledger_sequence  INTEGER     NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS probability_snapshots (
+  id               BIGSERIAL PRIMARY KEY,
+  market_id        TEXT        NOT NULL,
+  sampled_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  source           TEXT        NOT NULL CHECK (source IN ('interval', 'event')),
+  probability_a    NUMERIC(12,10) NOT NULL CHECK (probability_a BETWEEN 0 AND 1),
+  probability_b    NUMERIC(12,10) NOT NULL CHECK (probability_b BETWEEN 0 AND 1),
+  probability_draw NUMERIC(12,10) NOT NULL CHECK (probability_draw BETWEEN 0 AND 1),
+  pool_a           NUMERIC     NOT NULL,
+  pool_b           NUMERIC     NOT NULL,
+  pool_draw        NUMERIC     NOT NULL,
+  total_pool       NUMERIC     NOT NULL,
+  CONSTRAINT probability_snapshots_market_sample_unique UNIQUE (market_id, sampled_at, source)
+);
+CREATE INDEX IF NOT EXISTS probability_snapshots_market_sample_idx
+  ON probability_snapshots (market_id, sampled_at);
+
 CREATE TABLE IF NOT EXISTS market_audit_log (
   id                BIGSERIAL PRIMARY KEY,
   market_id         TEXT        NOT NULL,

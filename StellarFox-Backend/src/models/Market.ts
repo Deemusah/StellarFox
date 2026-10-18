@@ -39,6 +39,19 @@ export interface Market {
   ledger_sequence: number;
 }
 
+export interface ProbabilitySnapshot {
+  market_id: string;
+  sampled_at: Date;
+  source: 'interval' | 'event';
+  probability_a: number;
+  probability_b: number;
+  probability_draw: number;
+  pool_a: string;
+  pool_b: string;
+  pool_draw: string;
+  total_pool: string;
+}
+
 export type MarketStatusDB =
   | 'open'
   | 'locked'

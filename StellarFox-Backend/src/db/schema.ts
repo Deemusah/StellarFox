@@ -3,6 +3,7 @@ import {
   serial,
   text,
   numeric,
+  bigserial,
   boolean,
   timestamp,
   integer,
@@ -44,6 +45,34 @@ export const markets = pgTable(
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
     status_idx: index('markets_status_idx').on(table.status),
     scheduled_at_idx: index('markets_scheduled_at_idx').on(table.scheduled_at),
+  }),
+);
+
+export const probability_snapshots = pgTable(
+  'probability_snapshots',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    market_id: text('market_id').notNull(),
+    sampled_at: timestamp('sampled_at', { withTimezone: true }).notNull().defaultNow(),
+    source: text('source').notNull(),
+    probability_a: numeric('probability_a', { precision: 12, scale: 10 }).notNull(),
+    probability_b: numeric('probability_b', { precision: 12, scale: 10 }).notNull(),
+    probability_draw: numeric('probability_draw', { precision: 12, scale: 10 }).notNull(),
+    pool_a: numeric('pool_a').notNull(),
+    pool_b: numeric('pool_b').notNull(),
+    pool_draw: numeric('pool_draw').notNull(),
+    total_pool: numeric('total_pool').notNull(),
+  },
+  (table) => ({
+    market_sample_unique_idx: uniqueIndex('probability_snapshots_market_sample_unique').on(
+      table.market_id,
+      table.sampled_at,
+      table.source,
+    ),
+    market_sample_idx: index('probability_snapshots_market_sample_idx').on(
+      table.market_id,
+      table.sampled_at,
+    ),
   }),
 );
 

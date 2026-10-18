@@ -1,5 +1,6 @@
 import { pool } from '../config/db';
 import { cacheDeletePattern } from '../services/cache.service';
+import { recordProbabilitySnapshot } from '../services/MarketService';
 
 export interface RawStellarEvent {
   contract_address: string;
@@ -98,6 +99,7 @@ export class StellarEventProcessor implements EventProcessor {
         ]
       );
 
+      await recordProbabilitySnapshot(String(marketData.market_id));
       console.log(`[Indexer] Market created: ${marketData.market_id}`);
     } catch (err) {
       console.error(`[Indexer] Error handling MarketCreated event:`, err);
@@ -143,6 +145,7 @@ export class StellarEventProcessor implements EventProcessor {
     } finally {
       client.release();
     }
+    await recordProbabilitySnapshot(String(p.market_id));
   }
 
   private async handleMarketLocked(event: RawStellarEvent): Promise<void> {
@@ -150,6 +153,7 @@ export class StellarEventProcessor implements EventProcessor {
     await pool.query(`UPDATE markets SET status = 'locked', updated_at = NOW() WHERE market_id = $1`, [
       p.market_id,
     ]);
+    await recordProbabilitySnapshot(String(p.market_id));
   }
 
   private async handleMarketResolved(event: RawStellarEvent): Promise<void> {
@@ -192,6 +196,8 @@ export class StellarEventProcessor implements EventProcessor {
     } finally {
       client.release();
     }
+
+    await recordProbabilitySnapshot(String(p.market_id));
 
     // Gamification: credit prediction streaks to winning bettors and broadcast
     // real-time leaderboard rank updates.
@@ -250,6 +256,7 @@ export class StellarEventProcessor implements EventProcessor {
     } finally {
       client.release();
     }
+    await recordProbabilitySnapshot(String(p.market_id));
   }
 
   private async handleWinningsClaimed(event: RawStellarEvent): Promise<void> {

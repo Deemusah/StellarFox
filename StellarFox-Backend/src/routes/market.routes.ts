@@ -8,6 +8,7 @@ import {
     getMarketOdds,
     streamMarketOdds,
     getMarketStats,
+    getMarketProbabilityHistory,
     getPlatformStats,
     resolveMarket,
     simulatePayout,
@@ -156,6 +157,42 @@ router.get('/:market_id/odds', getMarketOdds);
  *         description: Market statistics
  */
 router.get('/:market_id/stats', getMarketStats);
+
+/**
+ * @swagger
+ * /markets/{market_id}/probabilities:
+ *   get:
+ *     summary: Get historical implied probabilities for a market
+ *     tags: [Markets]
+ *     parameters:
+ *       - in: path
+ *         name: market_id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *           maximum: 1000
+ *     responses:
+ *       200:
+ *         description: Chronological probability snapshots
+ *       404:
+ *         description: Market not found
+ */
+router.get('/:market_id/probabilities', getMarketProbabilityHistory);
 
 /**
  * @swagger

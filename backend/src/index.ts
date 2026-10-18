@@ -27,6 +27,7 @@ import engagementRouter from "./routes/engagement.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
@@ -161,6 +162,7 @@ const server = app.listen(PORT, () => {
   }
   startAutoResolutionCron();
   startAutoLockCron();
+  startProbabilitySnapshotCron();
   startCleanupCron();
 });
 
