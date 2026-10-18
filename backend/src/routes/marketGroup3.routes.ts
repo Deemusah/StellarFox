@@ -10,7 +10,9 @@ import {
   createMarketGroup3BodySchema,
   lockMarketGroup3ParamsSchema,
   lockMarketGroup3BodySchema,
+  marketAuditTrailQuerySchema,
 } from '../schemas/marketGroup3.schemas';
+import type { MarketAuditTrailQuery } from '../schemas/marketGroup3.schemas';
 import { validateQuery, validateParams, validateBody } from '../api/middleware/validate';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
 import { rateLimit } from '../middleware/rate-limit.middleware';
@@ -191,6 +193,84 @@ router.get(
       res.status(200).json({
         success: true,
         data: result.rows[0],
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/v2/markets/{id}/audit:
+ *   get:
+ *     summary: Retrieve the immutable audit history for a market (Admin only)
+ *     tags: [Market Group 3]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Market audit events ordered by timestamp and event ID
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  '/:id/audit',
+  requireAdminJwt,
+  validateParams(getMarketGroup3ParamsSchema),
+  validateQuery(marketAuditTrailQuerySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { page, limit } = req.query as unknown as MarketAuditTrailQuery;
+      const offset = (page - 1) * limit;
+      const marketFilter = '(market_id = $1 OR previous_market_id = $1)';
+      const countResult = await pool.query(
+        `SELECT COUNT(*) AS count FROM market_audit_log WHERE ${marketFilter}`,
+        [id]
+      );
+      const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+      const eventsResult = await pool.query(
+        `SELECT id, market_id, previous_market_id, operation, before_snapshot,
+                after_snapshot, changed_fields, actor_id, database_user,
+                application_name, transaction_id, occurred_at
+         FROM market_audit_log
+         WHERE ${marketFilter}
+         ORDER BY occurred_at ASC, id ASC
+         LIMIT $2 OFFSET $3`,
+        [id, limit, offset]
+      );
+
+      res.status(200).json({
+        success: true,
+        data: {
+          events: eventsResult.rows,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit) || 1,
+          },
+        },
       });
     } catch (err) {
       next(err);
