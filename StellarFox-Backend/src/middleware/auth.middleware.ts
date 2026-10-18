@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import * as authService from '../services/auth.service';
 import { AppError } from '../utils/AppError';
 import { getEnv } from '../config/env';
+import { authenticatedUserRateLimit } from './rate-limit.middleware';
 
 export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
@@ -27,7 +28,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
 
     (req as unknown as Record<string, unknown>).userId = userId;
     (req as unknown as Record<string, unknown>).sessionVersion = sessionVersion;
-    next();
+    return authenticatedUserRateLimit(req, _res, next);
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(401, 'Invalid or expired token'));
   }

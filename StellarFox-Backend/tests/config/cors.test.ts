@@ -92,6 +92,25 @@ describe('CORS Configuration', () => {
       corsMiddleware(mockReq, mockRes, next);
     });
 
+    it('should expose rate limit headers to browser clients', (done) => {
+      const mockReq = {
+        method: 'GET',
+        headers: { origin: 'http://localhost:3000' },
+      } as Request;
+      const mockRes = createMockResponse();
+      const next = jest.fn(() => {
+        const exposedHeaders = (mockRes.setHeader as jest.Mock).mock.calls.find(
+          (call) => call[0] === 'Access-Control-Expose-Headers',
+        )?.[1] as string;
+        expect(exposedHeaders).toContain('RateLimit-Limit');
+        expect(exposedHeaders).toContain('X-RateLimit-Reset');
+        expect(exposedHeaders).toContain('Retry-After');
+        done();
+      });
+
+      corsMiddleware(mockReq, mockRes, next);
+    });
+
     it('should reject requests from non-allowed origins', (done) => {
       const mockReq = {
         method: 'GET',
