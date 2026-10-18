@@ -12,6 +12,7 @@ import {
   index,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const markets = pgTable(
   'markets',
@@ -44,6 +45,11 @@ export const markets = pgTable(
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
     status_idx: index('markets_status_idx').on(table.status),
     scheduled_at_idx: index('markets_scheduled_at_idx').on(table.scheduled_at),
+    category_idx: index('markets_category_idx').on(sql`LOWER(${table.weight_class})`),
+    search_idx: index('markets_search_idx').using(
+      'gin',
+      sql`to_tsvector('simple', concat_ws(' ', ${table.fighter_a}, ${table.fighter_b}, ${table.weight_class}, ${table.venue}))`,
+    ),
   }),
 );
 

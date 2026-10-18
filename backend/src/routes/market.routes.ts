@@ -28,7 +28,7 @@ const router = Router();
  * @swagger
  * /markets:
  *   get:
- *     summary: List all markets (paginated)
+ *     summary: Search and list markets (paginated)
  *     tags: [Markets]
  *     parameters:
  *       - in: query
@@ -46,7 +46,39 @@ const router = Router();
  *         name: status
  *         schema:
  *           type: string
- *           enum: [OPEN, LOCKED, RESOLVED, CANCELLED]
+ *           enum: [open, locked, resolved, cancelled, disputed]
+ *       - in: query
+ *         name: search
+ *         description: Full-text search across fighter names, weight class, and venue
+ *         schema:
+ *           type: string
+ *           maxLength: 200
+ *       - in: query
+ *         name: category
+ *         description: Market category, mapped to weight_class
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: weight_class
+ *         description: Legacy alias for category
+ *         deprecated: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: dateFrom
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [date_asc, date_desc, pool_desc]
+ *       - in: query
+ *         name: dateTo
+ *         schema:
+ *           type: string
+ *           format: date-time
  *     responses:
  *       200:
  *         description: Paginated list of markets

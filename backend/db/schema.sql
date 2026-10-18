@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS markets (
   ledger_sequence  INTEGER     NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS markets_category_idx ON markets (LOWER(weight_class));
+CREATE INDEX IF NOT EXISTS markets_search_idx
+  ON markets USING GIN (to_tsvector('simple', concat_ws(' ', fighter_a, fighter_b, weight_class, venue)));
+
 CREATE TABLE IF NOT EXISTS bets (
   id               SERIAL PRIMARY KEY,
   market_id        TEXT        NOT NULL REFERENCES markets(market_id),

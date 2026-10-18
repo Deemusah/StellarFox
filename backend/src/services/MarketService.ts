@@ -11,6 +11,45 @@ import * as cache from './cache.service';
 import * as StellarService from './StellarService';
 import { AppError } from '../utils/AppError';
 
+function buildMarketWhere(filters?: MarketFilters): { whereSql: string; values: unknown[] } {
+  const whereClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (filters?.status) {
+    values.push(filters.status);
+    whereClauses.push(`status = $${values.length}`);
+  }
+  const category = filters?.category ?? filters?.weight_class;
+  if (category) {
+    values.push(category);
+    whereClauses.push(`LOWER(weight_class) = LOWER($${values.length})`);
+  }
+  if (filters?.search?.trim()) {
+    values.push(filters.search.trim());
+    whereClauses.push(
+      `to_tsvector('simple', concat_ws(' ', fighter_a, fighter_b, weight_class, venue)) ` +
+      `@@ plainto_tsquery('simple', $${values.length})`,
+    );
+  }
+  if (filters?.fighter) {
+    values.push(`%${filters.fighter}%`);
+    whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
+  }
+  if (filters?.dateFrom) {
+    values.push(filters.dateFrom);
+    whereClauses.push(`scheduled_at >= $${values.length}`);
+  }
+  if (filters?.dateTo) {
+    values.push(filters.dateTo);
+    whereClauses.push(`scheduled_at <= $${values.length}`);
+  }
+
+  return {
+    whereSql: whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '',
+    values,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // DB adapter — thin abstraction so tests can inject a mock
 // ---------------------------------------------------------------------------
@@ -51,31 +90,7 @@ export interface DbAdapter {
 
 export const defaultDbAdapter: DbAdapter = {
   async findMarkets(filters?: MarketFilters): Promise<Market[]> {
-    const whereClauses: string[] = [];
-    const values: unknown[] = [];
-
-    if (filters?.status) {
-      values.push(filters.status);
-      whereClauses.push(`status = $${values.length}`);
-    }
-    if (filters?.weight_class) {
-      values.push(filters.weight_class);
-      whereClauses.push(`weight_class = $${values.length}`);
-    }
-    if (filters?.fighter) {
-      values.push(`%${filters.fighter}%`);
-      whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
-    }
-    if (filters?.dateFrom) {
-      values.push(filters.dateFrom);
-      whereClauses.push(`scheduled_at >= $${values.length}`);
-    }
-    if (filters?.dateTo) {
-      values.push(filters.dateTo);
-      whereClauses.push(`scheduled_at <= $${values.length}`);
-    }
-
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const { whereSql, values } = buildMarketWhere(filters);
     const orderBySql =
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -177,7 +192,9 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
 
 export interface MarketFilters {
   status?: string;
+  category?: string;
   weight_class?: string;
+  search?: string;
   fighter?: string;
   dateFrom?: Date;
   dateTo?: Date;
@@ -248,25 +265,34 @@ export interface ProjectedPayout {
  * Returns paginated markets from the database.
  *
  * Steps:
- *   1. Build WHERE clause from filters (status, weight_class, fighter name, date range)
- *   2. Apply pagination (LIMIT / OFFSET)
- *   3. Check Redis cache — return cached result if fresh (TTL 30s)
- *   4. Query DB if cache miss; store result in cache before returning
- *   5. Sort by scheduled_at DESC by default
+ *   1. Check Redis cache — return cached result if fresh (TTL 30s)
+ *   2. Apply filters, sorting, and pagination in PostgreSQL
+ *   3. Store the paginated result in cache before returning
  */
 export async function getMarkets(
   filters?: MarketFilters,
   pagination?: Pagination,
 ): Promise<MarketListResult> {
   const statusKey = filters?.status ?? '';
-  const weightKey = filters?.weight_class ?? '';
+  const categoryKey = filters?.category ?? filters?.weight_class ?? '';
+  const searchKey = filters?.search?.trim() ?? '';
   const fighterKey = filters?.fighter ?? '';
   const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
   const dateToKey = filters?.dateTo?.toISOString() ?? '';
   const sortKey = filters?.sort ?? 'date_desc';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
+  const cacheKey = `markets:${JSON.stringify({
+    status: statusKey,
+    category: categoryKey,
+    search: searchKey,
+    fighter: fighterKey,
+    dateFrom: dateFromKey,
+    dateTo: dateToKey,
+    sort: sortKey,
+    page,
+    limit,
+  })}`;
   const cached = await cache.get<MarketListResult>(cacheKey);
   if (cached) return cached;
 
@@ -275,7 +301,15 @@ export async function getMarkets(
     const markets = await db().findMarkets(filters);
     const filtered = markets.filter((market) => {
       if (filters?.status && market.status !== filters.status) return false;
-      if (filters?.weight_class && market.weight_class !== filters.weight_class) return false;
+      const category = filters?.category ?? filters?.weight_class;
+      if (category && market.weight_class.toLowerCase() !== category.toLowerCase()) return false;
+      if (searchKey) {
+        const searchTerms = searchKey.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+        const searchableText =
+          `${market.fighter_a} ${market.fighter_b} ${market.weight_class} ${market.venue}`.toLowerCase();
+        const searchableTerms = new Set(searchableText.match(/[\p{L}\p{N}_]+/gu) ?? []);
+        if (!searchTerms.every((term) => searchableTerms.has(term))) return false;
+      }
       if (filters?.fighter) {
         const fighterLower = filters.fighter.toLowerCase();
         if (!market.fighter_a.toLowerCase().includes(fighterLower) && 
@@ -301,31 +335,7 @@ export async function getMarkets(
     const paged = sorted.slice(offset, offset + limit);
     result = { markets: paged, total: sorted.length };
   } else {
-    const whereClauses: string[] = [];
-    const values: unknown[] = [];
-
-    if (filters?.status) {
-      values.push(filters.status);
-      whereClauses.push(`status = $${values.length}`);
-    }
-    if (filters?.weight_class) {
-      values.push(filters.weight_class);
-      whereClauses.push(`weight_class = $${values.length}`);
-    }
-    if (filters?.fighter) {
-      values.push(`%${filters.fighter}%`);
-      whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
-    }
-    if (filters?.dateFrom) {
-      values.push(filters.dateFrom);
-      whereClauses.push(`scheduled_at >= $${values.length}`);
-    }
-    if (filters?.dateTo) {
-      values.push(filters.dateTo);
-      whereClauses.push(`scheduled_at <= $${values.length}`);
-    }
-
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const { whereSql, values } = buildMarketWhere(filters);
     const orderBySql = 
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
