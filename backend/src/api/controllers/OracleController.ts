@@ -4,6 +4,7 @@ import { AppError } from '../../utils/AppError';
 import { validate } from '../middleware/validate';
 import * as OracleService from '../../oracle/OracleService';
 import { redis } from '../../config/redis';
+import { incrWithExpire } from '../../services/redis-lua';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -30,12 +31,27 @@ const submitOracleResultSchema = z.object({
 
 export const validateSubmitOracleResult = validate(submitOracleResultSchema, 'body');
 
-const RATE_LIMIT_TTL = 60; // seconds
+const DEFAULT_ORACLE_RATE_LIMIT = 1;
+const DEFAULT_ORACLE_RATE_WINDOW_MS = 60_000;
+
+function getOracleRateLimitConfig() {
+  const limit = Number(process.env.ORACLE_UPDATE_LIMIT ?? DEFAULT_ORACLE_RATE_LIMIT);
+  const windowMs = Number(process.env.ORACLE_UPDATE_WINDOW_MS ?? DEFAULT_ORACLE_RATE_WINDOW_MS);
+
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_ORACLE_RATE_LIMIT;
+  const safeWindowMs = Number.isFinite(windowMs) && windowMs > 0 ? Math.floor(windowMs) : DEFAULT_ORACLE_RATE_WINDOW_MS;
+
+  return {
+    limit: safeLimit,
+    windowMs: safeWindowMs,
+    windowSec: Math.max(1, Math.ceil(safeWindowMs / 1000)),
+  };
+}
 
 /**
  * POST /api/oracle/submit
  * 1. Verify HMAC-SHA256 signature using ORACLE_HMAC_SECRET
- * 2. Rate-limit: 1 submission per match_id per 60 seconds (Redis)
+ * 2. Rate-limit updates per match_id per configured window (Redis)
  * 3. Respond 202 immediately; call OracleService.submitFightResult() async
  */
 export async function submitOracleResult(
@@ -68,11 +84,18 @@ export async function submitOracleResult(
       return next(new AppError(401, 'Invalid HMAC signature'));
     }
 
-    // Step 2 — Rate-limit: 1 submission per match_id per 60 seconds
+    // Step 2 — Rate-limit updates per match_id within the configured window.
+    const { limit, windowMs, windowSec } = getOracleRateLimitConfig();
     const rateLimitKey = `oracle:ratelimit:${match_id}`;
-    const existing = await redis.set(rateLimitKey, '1', 'EX', RATE_LIMIT_TTL, 'NX');
-    if (existing === null) {
-      return next(new AppError(429, `Rate limit exceeded: match_id ${match_id} already submitted within 60 seconds`));
+    const count = await incrWithExpire(redis, rateLimitKey, windowSec);
+    if (count > limit) {
+      const ttl = Math.max(1, await redis.ttl(rateLimitKey));
+      return next(
+        new AppError(
+          429,
+          `Rate limit exceeded: match_id ${match_id} has reached the limit of ${limit} updates per ${Math.ceil(windowMs / 1000)} seconds. Retry after ${ttl}s.`,
+        ),
+      );
     }
 
     // Step 3 — Respond 202 immediately
