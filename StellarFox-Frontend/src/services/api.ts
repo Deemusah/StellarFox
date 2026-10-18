@@ -17,6 +17,7 @@ import type {
   ReferralSummary,
   ReferralPayoutResult,
   UserNotification,
+  WatchlistMarket,
 } from '../types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -36,8 +37,10 @@ export class TimeoutError extends Error {
 const TIMEOUT_MS = 10000; // 10 seconds
 
 type ApiOptions = {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
+  /** Bearer token — adds Authorization header when provided */
+  token?: string;
 };
 
 async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
@@ -46,9 +49,17 @@ async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
   const method = options.method ?? 'GET';
   const init: RequestInit = { method, signal: controller.signal };
+
+  const headers: Record<string, string> = {};
   if (options.body !== undefined) {
-    init.headers = { 'Content-Type': 'application/json' };
+    headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(options.body);
+  }
+  if (options.token) {
+    headers['Authorization'] = `Bearer ${options.token}`;
+  }
+  if (Object.keys(headers).length > 0) {
+    init.headers = headers;
   }
 
   let res: Response;
@@ -222,4 +233,292 @@ export async function fetchNotifications(address: string, limit = 50): Promise<U
   return apiFetch<UserNotification[]>(
     `/api/engagement/notifications/${address}?limit=${limit}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls GET /api/watchlist.
+ * Returns the authenticated user's watchlisted markets.
+ */
+export async function fetchWatchlist(token: string): Promise<WatchlistMarket[]> {
+  return apiFetch<{ success: boolean; data: WatchlistMarket[] }>('/api/watchlist', {
+    method: 'GET',
+    token,
+  }).then((r) => r.data);
+}
+
+/**
+ * Calls POST /api/watchlist/:marketId.
+ * Adds a market to the user's watchlist.
+ */
+export async function addToWatchlist(marketId: string, token: string): Promise<void> {
+  await apiFetch(`/api/watchlist/${marketId}`, { method: 'POST', token });
+}
+
+/**
+ * Calls DELETE /api/watchlist/:marketId.
+ * Removes a market from the user's watchlist.
+ */
+export async function removeFromWatchlist(marketId: string, token: string): Promise<void> {
+  await apiFetch(`/api/watchlist/${marketId}`, { method: 'DELETE', token });
+}
+
+/**
+ * Calls GET /api/watchlist/:marketId/status.
+ * Returns whether the given market is on the user's watchlist.
+ */
+export async function checkWatchlistStatus(
+  marketId: string,
+  token: string,
+): Promise<boolean> {
+  const res = await apiFetch<{ success: boolean; data: { watchlisted: boolean } }>(
+    `/api/watchlist/${marketId}/status`,
+    { method: 'GET', token },
+  );
+  return res.data.watchlisted;
+}
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls POST /api/feedback.
+ * Submits user feedback. Auth is optional — anonymous submissions are accepted.
+ */
+export async function submitFeedback(
+  input: {
+    category: string;
+    rating?: number;
+    message: string;
+    pageUrl?: string;
+  },
+  token?: string,
+): Promise<{ id: number }> {
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  };
+  if (token) (init.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  init.signal = controller.signal;
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/feedback`, init);
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw new TimeoutError();
+    throw new NetworkError((e as Error).message);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new NetworkError(`Unexpected response: ${res.status} ${detail}`);
+  }
+  const data = await res.json() as { success: boolean; data: { id: number } };
+  return data.data;
+}
+
+// ---------------------------------------------------------------------------
+// Bug Reports
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls POST /api/bug-reports.
+ * Submits a bug report. Auth is optional — anonymous submissions are accepted.
+ */
+export async function submitBugReport(
+  input: {
+    title: string;
+    description: string;
+    severity?: string;
+    category?: string;
+    stepsToReproduce?: string;
+    expectedBehavior?: string;
+    actualBehavior?: string;
+    pageUrl?: string;
+    browserInfo?: Record<string, unknown>;
+  },
+  token?: string,
+): Promise<{ id: number }> {
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  };
+  if (token) (init.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  init.signal = controller.signal;
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/bug-reports`, init);
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw new TimeoutError();
+    throw new NetworkError((e as Error).message);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new NetworkError(`Unexpected response: ${res.status} ${detail}`);
+  }
+  const data = await res.json() as { success: boolean; data: { id: number } };
+  return data.data;
+}
+
+import type {
+  WatchlistMarket,
+  RetentionConfig,
+} from '../types';
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls POST /api/feedback.
+ * Auth is optional — pass a token for logged-in users.
+ */
+export async function submitFeedback(
+  input: {
+    category: string;
+    rating?: number;
+    message: string;
+    pageUrl?: string;
+  },
+  token?: string,
+): Promise<{ id: number }> {
+  const res = await apiFetch<{ success: boolean; data: { id: number } }>(
+    '/api/feedback',
+    { method: 'POST', body: input, token },
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Bug Reports
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls POST /api/bug-reports.
+ * Auth is optional — pass a token for logged-in users.
+ */
+export async function submitBugReport(
+  input: {
+    title: string;
+    description: string;
+    severity?: string;
+    category?: string;
+    stepsToReproduce?: string;
+    expectedBehavior?: string;
+    actualBehavior?: string;
+    pageUrl?: string;
+    browserInfo?: Record<string, unknown>;
+  },
+  token?: string,
+): Promise<{ id: number }> {
+  const res = await apiFetch<{ success: boolean; data: { id: number } }>(
+    '/api/bug-reports',
+    { method: 'POST', body: input, token },
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Market Watchlist
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls GET /api/watchlist.
+ * Returns the authenticated user's watchlisted markets.
+ */
+export async function fetchWatchlist(token: string): Promise<WatchlistMarket[]> {
+  const res = await apiFetch<{ success: boolean; data: WatchlistMarket[] }>(
+    '/api/watchlist',
+    { token },
+  );
+  return res.data;
+}
+
+/**
+ * Calls POST /api/watchlist/:marketId.
+ * Adds a market to the authenticated user's watchlist.
+ */
+export async function addToWatchlist(
+  marketId: string,
+  token: string,
+): Promise<void> {
+  await apiFetch(`/api/watchlist/${encodeURIComponent(marketId)}`, {
+    method: 'POST',
+    token,
+  });
+}
+
+/**
+ * Calls DELETE /api/watchlist/:marketId.
+ * Removes a market from the authenticated user's watchlist.
+ */
+export async function removeFromWatchlist(
+  marketId: string,
+  token: string,
+): Promise<void> {
+  await apiFetch(`/api/watchlist/${encodeURIComponent(marketId)}`, {
+    method: 'DELETE',
+    token,
+  });
+}
+
+/**
+ * Calls GET /api/watchlist/:marketId/status.
+ * Returns whether a specific market is in the user's watchlist.
+ */
+export async function checkWatchlistStatus(
+  marketId: string,
+  token: string,
+): Promise<boolean> {
+  const res = await apiFetch<{
+    success: boolean;
+    data: { watchlisted: boolean };
+  }>(`/api/watchlist/${encodeURIComponent(marketId)}/status`, { token });
+  return res.data.watchlisted;
+}
+
+// ---------------------------------------------------------------------------
+// Retention Configuration (admin)
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls GET /api/admin/retention.
+ * Returns all retention configuration entries. Admin only.
+ */
+export async function fetchRetentionConfigs(
+  token: string,
+): Promise<RetentionConfig[]> {
+  const res = await apiFetch<{ success: boolean; data: RetentionConfig[] }>(
+    '/api/admin/retention',
+    { token },
+  );
+  return res.data;
+}
+
+/**
+ * Calls PUT /api/admin/retention/:dataType.
+ * Creates or updates a retention configuration. Admin only.
+ */
+export async function upsertRetentionConfig(
+  dataType: string,
+  updates: { retentionDays?: number; enabled?: boolean; description?: string },
+  token: string,
+): Promise<RetentionConfig> {
+  const res = await apiFetch<{ success: boolean; data: RetentionConfig }>(
+    `/api/admin/retention/${encodeURIComponent(dataType)}`,
+    { method: 'PUT', body: updates, token },
+  );
+  return res.data;
 }
