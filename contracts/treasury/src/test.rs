@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, Events},
-    Address, Env, Symbol, Vec,
+    Address, Env, Map, Symbol, Vec,
 };
 use boxmeout_shared::errors::ContractError;
 use boxmeout_shared::types::FeeTier;
@@ -174,5 +174,69 @@ fn test_set_fee_tiers_with_excessive_bps_fails() {
 
     let result = client.try_set_fee_tiers(&admin, &invalid_tiers);
     assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), Ok(ContractError::InvalidAmount));
+}
+
+#[test]
+fn test_deposit_fees_rejects_i128_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, Treasury);
+    let client = TreasuryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let market = Address::generate(&env);
+    let token = env.register_stellar_asset_contract(admin.clone());
+    let factory = Address::generate(&env);
+    client.initialize(&admin, &token, &factory, &1_000_000_000_i128);
+    client.approve_market(&admin, &market);
+
+    env.as_contract(&contract_id, || {
+        let mut fees: Map<Address, i128> = Map::new(&env);
+        fees.set(token.clone(), i128::MAX);
+        env.storage().persistent().set(&crate::ACCUMULATED_FEES, &fees);
+    });
+
+    env.as_contract(&contract_id, || {
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.mint(&market, &1_i128);
+    });
+
+    let result = client.try_deposit_fees(&market, &token, &1_i128);
+    assert!(result.is_err(), "fee accumulation must reject integer overflow");
+    assert_eq!(result.unwrap_err(), Ok(ContractError::InvalidAmount));
+}
+
+#[test]
+fn test_withdraw_fees_rejects_daily_cap_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, Treasury);
+    let client = TreasuryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let market = Address::generate(&env);
+    let token = env.register_stellar_asset_contract(admin.clone());
+    let factory = Address::generate(&env);
+    client.initialize(&admin, &token, &factory, &1_000_000_000_i128);
+    client.approve_market(&admin, &market);
+
+    let dest = Address::generate(&env);
+    let bucket = 0u64;
+    env.as_contract(&contract_id, || {
+        let mut caps: Map<Address, i128> = Map::new(&env);
+        caps.set(token.clone(), 1_i128);
+        env.storage().persistent().set(&crate::DAILY_TOKEN_CAP, &caps);
+
+        let key = (Symbol::new(&env, "DTW"), token.clone());
+        let mut daily: Map<u64, i128> = Map::new(&env);
+        daily.set(bucket, i128::MAX);
+        env.storage().persistent().set(&key, &daily);
+
+        let mut fees: Map<Address, i128> = Map::new(&env);
+        fees.set(token.clone(), 1_i128);
+        env.storage().persistent().set(&crate::ACCUMULATED_FEES, &fees);
+    });
+
+    let result = client.try_withdraw_fees(&admin, &token, &1_i128, &dest);
+    assert!(result.is_err(), "daily arithmetic must reject overflow before transfer");
     assert_eq!(result.unwrap_err(), Ok(ContractError::InvalidAmount));
 }
