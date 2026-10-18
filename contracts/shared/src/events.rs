@@ -188,6 +188,10 @@ pub fn emit_conflicting_oracle_report(env: &Env, market_id: u64, oracle_address:
     env.events().publish(topics, oracle_address);
 }
 
+/// Emits a `contract_upgraded` event containing the replacement Wasm hash.
+///
+/// Topics: `(Symbol("contract_upgraded"),)`
+/// Data:   `new_wasm_hash: BytesN<32>`
 pub fn emit_contract_upgraded(env: &Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
     let topics = (Symbol::new(env, "contract_upgraded"),);
     env.events().publish(topics, new_wasm_hash);

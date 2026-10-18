@@ -46,6 +46,16 @@ jobs:
         working-directory: contracts
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Check public function documentation
+        working-directory: contracts
+        run: python3 scripts/check_rustdoc.py
+
+      - name: Generate Rust documentation
+        working-directory: contracts
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
+        run: cargo doc --workspace --no-deps
+
       # Tests disabled - test structure refactoring in progress
       # - name: Tests
       #   working-directory: contracts
