@@ -93,23 +93,46 @@ impl Treasury {
         daily.get(bucket).unwrap_or(0)
     }
 
-    fn record_token_withdrawal(env: &Env, token: &Address, bucket: u64, amount: i128) {
+    fn checked_add_i128(lhs: i128, rhs: i128) -> Result<i128, ContractError> {
+        lhs.checked_add(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    fn checked_sub_i128(lhs: i128, rhs: i128) -> Result<i128, ContractError> {
+        lhs.checked_sub(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    fn checked_add_u64(lhs: u64, rhs: u64) -> Result<u64, ContractError> {
+        lhs.checked_add(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    /// Safety note: fee ledger totals, daily caps, and audit sequence IDs must never wrap.
+    /// Every balance adjustment in Treasury uses checked arithmetic so near-boundary values
+    /// fail with ContractError::InvalidAmount instead of silently corrupting state.
+    fn record_token_withdrawal(
+        env: &Env,
+        token: &Address,
+        bucket: u64,
+        amount: i128,
+    ) -> Result<(), ContractError> {
         let key = (Symbol::new(env, "DTW"), token.clone());
         let mut daily: Map<u64, i128> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(env));
         let today = daily.get(bucket).unwrap_or(0);
-        daily.set(bucket, today + amount);
+        let next_total = Self::checked_add_i128(today, amount)?;
+        daily.set(bucket, next_total);
 
         let mut stale: Vec<u64> = Vec::new(env);
         for (k, _) in daily.iter() {
-            if k + 1 < bucket {
-                stale.push_back(k);
+            match k.checked_add(1) {
+                Some(next) if next < bucket => stale.push_back(k),
+                _ => {}
             }
         }
         for k in stale.iter() {
             daily.remove(k);
         }
         env.storage().persistent().set(&key, &daily);
+        Ok(())
     }
 
     fn record_audit(
@@ -119,7 +142,7 @@ impl Treasury {
         amount: i128,
         actor: Address,
         destination: Address,
-    ) {
+    ) -> Result<(), ContractError> {
         let next_id: u64 = env.storage().persistent().get(&AUDIT_NEXT_ID).unwrap_or(0);
         let bucket = Self::day_bucket(env);
         let entry = AuditEntry {
@@ -140,9 +163,10 @@ impl Treasury {
             .unwrap_or_else(|| Vec::new(env));
         log.push_back(entry.clone());
         env.storage().persistent().set(&AUDIT_LOG, &log);
-        env.storage().persistent().set(&AUDIT_NEXT_ID, &(next_id + 1));
+        env.storage().persistent().set(&AUDIT_NEXT_ID, &Self::checked_add_u64(next_id, 1)?);
 
         boxmeout_shared::emit_audit_recorded(env, entry);
+        Ok(())
     }
 }
 
@@ -254,7 +278,8 @@ impl Treasury {
             .get(&ACCUMULATED_FEES)
             .unwrap_or_else(|| Map::new(&env));
         let current = fees.get(token.clone()).unwrap_or(0);
-        fees.set(token.clone(), current + amount);
+        let next_total = Self::checked_add_i128(current, amount)?;
+        fees.set(token.clone(), next_total);
         env.storage().persistent().set(&ACCUMULATED_FEES, &fees);
 
         token::Client::new(&env, &token).transfer(
@@ -270,7 +295,7 @@ impl Treasury {
             amount,
             market.clone(),
             env.current_contract_address(),
-        );
+        )?;
 
         boxmeout_shared::emit_fee_deposited(&env, market, token, amount);
         Ok(())
@@ -310,7 +335,8 @@ impl Treasury {
         let token_cap = cap_map.get(token.clone()).unwrap_or(0);
         if token_cap > 0 {
             let already = Self::token_withdrawn_today(&env, &token, bucket);
-            if already + amount > token_cap {
+            let projected = Self::checked_add_i128(already, amount)?;
+            if projected > token_cap {
                 return Err(ContractError::DailyWithdrawalLimitExceeded);
             }
         }
@@ -328,11 +354,12 @@ impl Treasury {
             return Err(ContractError::InsufficientBalance);
         }
 
-        fees.set(token.clone(), current - amount);
+        let reduced_total = Self::checked_sub_i128(current, amount)?;
+        fees.set(token.clone(), reduced_total);
         env.storage().persistent().set(&ACCUMULATED_FEES, &fees);
 
         if token_cap > 0 {
-            Self::record_token_withdrawal(&env, &token, bucket, amount);
+            Self::record_token_withdrawal(&env, &token, bucket, amount)?;
         }
 
         Self::release_fee_lock(&env);
@@ -350,7 +377,7 @@ impl Treasury {
             amount,
             admin.clone(),
             destination.clone(),
-        );
+        )?;
 
         boxmeout_shared::emit_fee_withdrawn(&env, token, amount, destination);
         Ok(())
@@ -397,7 +424,7 @@ impl Treasury {
             amount,
             admin.clone(),
             destination.clone(),
-        );
+        )?;
 
         boxmeout_shared::emit_emergency_drain(&env, token, amount, destination);
         Ok(amount)
