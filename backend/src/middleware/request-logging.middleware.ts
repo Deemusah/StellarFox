@@ -20,6 +20,7 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   const method = req.method;
   const path = req.path;
+  const requestId = (req as Request & { requestId?: string }).requestId;
 
   // Capture response end to log status and response time
   const originalSend = res.send;
@@ -40,6 +41,7 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
       statusCode,
       responseTime: `${responseTime}ms`,
       ip,
+      ...(requestId && { requestId }),
       ...(isSensitive && { body }),
       ...(displayAuthHeader && { authorization: displayAuthHeader }),
     };

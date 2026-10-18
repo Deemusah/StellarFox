@@ -12,6 +12,7 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
+import { requestIdMiddleware } from "./middleware/requestId.middleware";
 import { AppError } from "./utils/AppError";
 import { logger } from "./utils/logger";
 import { pool } from "./config/db";
@@ -21,13 +22,15 @@ import marketRouter from "./routes/market.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
+import batchRouter from "./routes/batch.routes";
+import systemHealthRouter from "./routes/systemHealth.routes";
 
 import engagementRouter from "./routes/engagement.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
-import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
+import { initActivityFeed, getActivityFeed, tryGetActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
 import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
@@ -45,7 +48,8 @@ const app = express();
 app.use(createCorsMiddleware());
 
 // Middleware
-app.use(pinoHttp({ logger }));
+app.use(requestIdMiddleware);
+app.use(pinoHttp({ logger, genReqId: (req) => (req as any).requestId }));
 app.use(express.json());
 app.use(requestLogging);
 
@@ -77,6 +81,15 @@ app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     await redis.ping();
+
+    const feed = tryGetActivityFeed();
+    const wsMetrics = feed
+      ? {
+          connectedClients: feed.getConnectedClientCount(),
+          subscriptionRooms: feed.getSubscriptionRoomCount(),
+        }
+      : null;
+
     res.json({
       status: "ok",
       db: "connected",
@@ -87,6 +100,7 @@ app.get("/health", async (_req, res) => {
         idleCount: pool.idleCount,
         waitingCount: pool.waitingCount,
       },
+      ...(wsMetrics !== null && { websocket: wsMetrics }),
     });
   } catch {
     res.status(503).json({ status: "error" });
@@ -98,6 +112,7 @@ app.use("/auth", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" }));
 app.use("/api", rateLimit({ windowMs: 60_000, max: 60, keyBy: "ip" })); // Public endpoints
 app.use("/api/oracle", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" })); // Oracle endpoint stricter
 app.use("/api/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" })); // Admin endpoints
+app.use("/api/batch", rateLimit({ windowMs: 60_000, max: 30, keyBy: "userId" })); // Batch endpoints
 app.use("/trading", rateLimit({ windowMs: 60_000, max: 60, keyBy: "userId" }));
 app.use(
   "/wallet/withdraw",
@@ -114,6 +129,8 @@ app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/users", usersRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/batch", batchRouter);
+app.use("/api/v1/health", systemHealthRouter);
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));
 
