@@ -1910,6 +1910,58 @@ mod claim_routing_tests {
         assert_eq!(token_client.balance(&bettor), 9_800_000);
     }
 
+    /// A failed bettor transfer must roll back the earlier fee transfer and claim state.
+    #[test]
+    fn test_claim_winnings_transfer_failure_rolls_back_settlement() {
+        let env = Env::default();
+        setup_env(&env);
+
+        let factory = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let bettor = Address::generate(&env);
+        let (client, contract_id) = register_market(&env, &factory, &treasury);
+
+        let token_id = env.register_stellar_asset_contract(factory.clone());
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &200_000i128);
+
+        let state = MarketState {
+            market_id: 1,
+            fight: default_fight(&env),
+            config: default_config(),
+            status: MarketStatus::Resolved,
+            outcome: OptionalOutcome::Some(Outcome::FighterA),
+            pool_a: 10_000_000,
+            pool_b: 0,
+            pool_draw: 0,
+            total_pool: 10_000_000,
+            resolved_at: 50_000,
+            oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
+        };
+        let bet = BetRecord {
+            bettor: bettor.clone(),
+            market_id: 1,
+            side: BetSide::FighterA,
+            amount: 10_000_000,
+            placed_at: 1_000,
+            claimed: false,
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &state);
+            let mut bets = soroban_sdk::Vec::new(&env);
+            bets.push_back(bet);
+            let key = (soroban_sdk::Symbol::new(&env, "BET"), bettor.clone());
+            env.storage().persistent().set(&key, &bets);
+        });
+
+        assert!(client.try_claim_winnings(&bettor, &token_id).is_err());
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 200_000);
+        assert_eq!(token_client.balance(&treasury), 0);
+        assert_eq!(token_client.balance(&bettor), 0);
+        assert!(!client.has_claimed(&bettor));
+    }
+
     /// Draw outcome: fee deducted once and payout plus fee equals total pool.
     #[test]
     fn test_claim_winnings_draw_outcome_applies_fee_once() {

@@ -607,13 +607,35 @@ export async function handleMarketResolved(event: RawStellarEvent): Promise<void
     if (!marketId) {
       throw new Error('Missing market_id in MarketResolved event');
     }
+    if (!outcome || !['fighter_a', 'fighter_b', 'draw', 'no_contest'].includes(outcome)) {
+      throw new Error(`Invalid outcome in MarketResolved event: ${String(outcome)}`);
+    }
 
-    await client.query(
+    const { rows: existingMarkets } = await client.query(
+      `SELECT status, outcome FROM markets WHERE market_id = $1 FOR UPDATE`,
+      [marketId],
+    );
+    const existingMarket = existingMarkets[0];
+    if (!existingMarket) {
+      throw new Error(`Cannot resolve unknown market: ${marketId}`);
+    }
+    if (existingMarket.status === 'cancelled') {
+      throw new Error(`Cannot resolve cancelled market: ${marketId}`);
+    }
+    if (existingMarket.status === 'resolved' && existingMarket.outcome !== outcome) {
+      throw new Error(`Conflicting resolution for market: ${marketId}`);
+    }
+
+    const { rows: updatedMarkets } = await client.query(
       `UPDATE markets
           SET status = 'resolved', outcome = $1, resolved_at = $2, oracle_used = $3, updated_at = NOW()
-        WHERE market_id = $4`,
+        WHERE market_id = $4
+        RETURNING market_id, status, outcome`,
       [outcome, resolvedAt, oracleAddress ?? null, marketId],
     );
+    if (updatedMarkets.length !== 1 || updatedMarkets[0].status !== 'resolved' || updatedMarkets[0].outcome !== outcome) {
+      throw new Error(`Market resolution state validation failed: ${marketId}`);
+    }
 
     await client.query(
       `INSERT INTO oracle_reports
@@ -630,17 +652,32 @@ export async function handleMarketResolved(event: RawStellarEvent): Promise<void
       ],
     );
 
-    const { rows: bettors } = await client.query(
-      `SELECT DISTINCT bettor_address FROM bets WHERE market_id = $1`,
-      [marketId]
-    );
-
-    for (const bettor of bettors) {
-      await client.query(
-        `INSERT INTO notification_jobs (bettor_address, market_id, job_type, status, created_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [bettor.bettor_address, marketId, 'market_resolved', 'pending']
+    if (existingMarket.status !== 'resolved') {
+      const { rows: bettors } = await client.query(
+        `SELECT DISTINCT bettor_address FROM bets WHERE market_id = $1`,
+        [marketId]
       );
+
+      for (const bettor of bettors) {
+        await client.query(
+          `INSERT INTO notification_jobs (bettor_address, market_id, job_type, status, created_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [bettor.bettor_address, marketId, 'market_resolved', 'pending']
+        );
+      }
+    }
+
+    const { rows: settledMarkets } = await client.query(
+      `SELECT status, outcome, resolved_at FROM markets WHERE market_id = $1`,
+      [marketId],
+    );
+    if (
+      settledMarkets.length !== 1 ||
+      settledMarkets[0].status !== 'resolved' ||
+      settledMarkets[0].outcome !== outcome ||
+      settledMarkets[0].resolved_at == null
+    ) {
+      throw new Error(`Market settlement consistency validation failed: ${marketId}`);
     }
 
     await client.query('COMMIT');
