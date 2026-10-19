@@ -1,14 +1,17 @@
 // backend/src/api/controllers/disputes.controller.ts - Disputes Controller
-import { Response } from 'express';
+import { Response, NextFunction } from 'express';
 import { pool } from '../../config/db';
 import { AuthenticatedRequest } from '../../types/auth.types';
 import { logger } from '../../utils/logger';
+import { AppError } from '../../utils/AppError';
+import { ERROR_CODES } from '../../constants/errorCodes';
+import { buildPaginationMeta } from '../../utils/pagination';
 
 const COOLDOWN_HOURS = 24;
 
 class DisputesController {
 
-  async submitDispute(req: AuthenticatedRequest, res: Response) {
+  async submitDispute(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const userId = req.user!.userId;
       const { marketId, reason, evidenceUrl } = req.body;
@@ -22,13 +25,13 @@ class DisputesController {
       );
 
       if (cooldownCheck.rows.length > 0) {
-        return res.status(429).json({
-          success: false,
-          error: {
-            code: 'DISPUTE_COOLDOWN',
-            message: `You can only submit one dispute per market every ${COOLDOWN_HOURS} hours`,
-          },
-        });
+        return next(
+          new AppError(
+            429,
+            `You can only submit one dispute per market every ${COOLDOWN_HOURS} hours`,
+            ERROR_CODES.INVALID_REQUEST,
+          ),
+        );
       }
 
       const existingActive = await pool.query(
@@ -37,13 +40,9 @@ class DisputesController {
       );
 
       if (existingActive.rows.length > 0) {
-        return res.status(409).json({
-          success: false,
-          error: {
-            code: 'ACTIVE_DISPUTE_EXISTS',
-            message: 'An active dispute already exists for this market',
-          },
-        });
+        return next(
+          new AppError(409, 'An active dispute already exists for this market', ERROR_CODES.RESOURCE_ALREADY_EXISTS),
+        );
       }
 
       const result = await pool.query(
@@ -58,12 +57,11 @@ class DisputesController {
         data: result.rows[0],
       });
     } catch (error) {
-      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.submitDispute');
-      return res.status(500).json({ success: false, message: 'Internal server error' });
+      next(error);
     }
   }
 
-  async listDisputes(req: AuthenticatedRequest, res: Response) {
+  async listDisputes(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const status = req.query.status as string | undefined;
       const marketId = req.query.marketId as string | undefined;
@@ -99,23 +97,15 @@ class DisputesController {
         success: true,
         data: {
           disputes: result.rows,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit),
-            hasNext: page * limit < total,
-            hasPrev: page > 1,
-          },
+          meta: buildPaginationMeta(total, page, limit),
         },
       });
     } catch (error) {
-      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.listDisputes');
-      return res.status(500).json({ success: false, message: 'Internal server error' });
+      next(error);
     }
   }
 
-  async getDispute(req: AuthenticatedRequest, res: Response) {
+  async getDispute(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { disputeId } = req.params;
       const result = await pool.query(
@@ -124,17 +114,16 @@ class DisputesController {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Dispute not found' });
+        return next(AppError.notFound('Dispute not found', ERROR_CODES.NOT_FOUND));
       }
 
       return res.status(200).json({ success: true, data: result.rows[0] });
     } catch (error) {
-      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.getDispute');
-      return res.status(500).json({ success: false, message: 'Internal server error' });
+      next(error);
     }
   }
 
-  async reviewDispute(req: AuthenticatedRequest, res: Response) {
+  async reviewDispute(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { disputeId } = req.params;
       const { adminNotes } = req.body;
@@ -148,17 +137,16 @@ class DisputesController {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Dispute not found or already reviewed' });
+        return next(AppError.notFound('Dispute not found or already reviewed', ERROR_CODES.NOT_FOUND));
       }
 
       return res.status(200).json({ success: true, data: result.rows[0] });
     } catch (error) {
-      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.reviewDispute');
-      return res.status(500).json({ success: false, message: 'Internal server error' });
+      next(error);
     }
   }
 
-  async resolveDispute(req: AuthenticatedRequest, res: Response) {
+  async resolveDispute(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { disputeId } = req.params;
       const { action, resolution, adminNotes, newWinningOutcome } = req.body;
@@ -174,13 +162,12 @@ class DisputesController {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Dispute not found or not in reviewing status' });
+        return next(AppError.notFound('Dispute not found or not in reviewing status', ERROR_CODES.NOT_FOUND));
       }
 
       return res.status(200).json({ success: true, data: result.rows[0] });
     } catch (error) {
-      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.resolveDispute');
-      return res.status(500).json({ success: false, message: 'Internal server error' });
+      next(error);
     }
   }
 }

@@ -5,6 +5,13 @@ import { AppError } from '../utils/AppError';
 import { validateBody } from '../api/middleware/validate';
 import { rateLimit } from '../middleware/rate-limit.middleware';
 import { requireAuth } from '../middleware/auth.middleware';
+import {
+  emailLoginBody,
+  refreshBody,
+  logoutBody,
+  passwordSchema,
+} from '../schemas/validation.schemas';
+import { ERROR_CODES } from '../constants/errorCodes';
 
 const router = Router();
 
@@ -18,7 +25,21 @@ const router = Router();
 // ---------------------------------------------------------------------------
 // Zod schemas for request validation
 // ---------------------------------------------------------------------------
+const forgotPasswordSchema = z.object({
+  email: z.string().email('Invalid email address').min(5).max(254),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1, 'Reset token is required'),
+  newPassword: passwordSchema,
+});
+
 const otpSchema = z.object({
+  otp: z.string().min(1),
+});
+
+const verifySchema = z.object({
+  tempToken: z.string().min(1),
   otp: z.string().min(1),
 });
 
@@ -66,10 +87,9 @@ const verifySchema = z.object({
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', validateBody(emailLoginBody), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) throw new AppError(400, 'Email and password required');
     const result = await authService.login(email, password);
     res.json(result);
   } catch (err) {
@@ -171,16 +191,11 @@ router.post('/logout', validateBody(logoutBody), async (req: Request, res: Respo
 router.post(
   '/forgot-password',
   rateLimit({ windowMs: 15 * 60_000, max: 5, keyBy: 'ip' }),
+  validateBody(forgotPasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { email } = req.body;
-      if (!email || typeof email !== 'string') {
-        throw new AppError(400, 'Email is required');
-      }
-
       // Always fire-and-forget — never reveal whether the email exists
-      await authService.forgotPassword(email.trim().toLowerCase());
-
+      await authService.forgotPassword(req.body.email.trim().toLowerCase());
       res.json({ message: 'If that email exists, a reset link has been sent.' });
     } catch (err) {
       next(err);
@@ -220,22 +235,11 @@ router.post(
 router.post(
   '/reset-password',
   rateLimit({ windowMs: 15 * 60_000, max: 10, keyBy: 'ip' }),
+  validateBody(resetPasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { token, newPassword } = req.body;
-
-      if (!token || typeof token !== 'string') {
-        throw new AppError(400, 'Reset token is required');
-      }
-      if (!newPassword || typeof newPassword !== 'string') {
-        throw new AppError(400, 'New password is required');
-      }
-      if (newPassword.length < 8) {
-        throw new AppError(400, 'Password must be at least 8 characters');
-      }
-
       await authService.resetPassword(token, newPassword);
-
       res.json({ message: 'Password updated successfully. Please log in again.' });
     } catch (err) {
       next(err);

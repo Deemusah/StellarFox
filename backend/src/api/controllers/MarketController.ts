@@ -9,6 +9,7 @@ import { StrKey } from '@stellar/stellar-sdk';
 import { AppError } from '../../utils/AppError';
 import { ERROR_CODES } from '../../constants/errorCodes';
 import { validateQuery } from '../middleware/validate';
+import { buildPaginationMeta, applyOffsetPagination } from '../../utils/pagination';
 import * as MarketService from '../../services/MarketService';
 import * as OracleService from '../../oracle/OracleService';
 
@@ -75,7 +76,10 @@ export async function listMarkets(req: Request, res: Response, next: NextFunctio
       { status, weight_class, fighter, dateFrom, dateTo, sort },
       { page, limit },
     );
-    res.status(200).json({ markets, total, page, limit });
+    res.status(200).json({
+      markets,
+      meta: buildPaginationMeta(total, page, limit),
+    });
   } catch (err) {
     next(err);
   }
@@ -117,30 +121,43 @@ const marketBetsQuerySchema = z.object({
       message: 'Invalid Stellar address format',
     })
     .optional(),
+  page: z.coerce.number().int().min(1, { message: 'page must be an integer ≥ 1' }).default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1, { message: 'limit must be between 1 and 100' })
+    .max(100, { message: 'limit must be between 1 and 100' })
+    .default(20),
 });
 
 /**
  * GET /api/markets/:market_id/bets
- * Query params: address (optional — filter to one bettor)
+ * Query params: address (optional — filter to one bettor), page, limit
  *
- * Returns all bets for a market.
- * Responds 404 if market not found, 200 with Bet[].
+ * Returns paginated bets for a market.
+ * Responds 404 if market not found, 200 with { bets, meta: { page, limit, total, totalPages } }.
  */
 export const getMarketBetsValidation = validateQuery(marketBetsQuerySchema);
 
 export async function getMarketBets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { market_id } = req.params;
-    const { address } = req.query;
+    const { address, page, limit } = req.query as unknown as {
+      address?: string;
+      page: number;
+      limit: number;
+    };
 
     if (address !== undefined) {
       if (typeof address !== 'string' || !StrKey.isValidEd25519PublicKey(address)) {
-        throw AppError.badRequest('Invalid Stellar address format');
+        throw AppError.badRequest('Invalid Stellar address format', ERROR_CODES.INVALID_REQUEST);
       }
     }
 
-    const bets = await MarketService.getBetsByMarket(market_id, address as string | undefined);
-    res.json(bets);
+    const allBets = await MarketService.getBetsByMarket(market_id, address);
+    const { data: bets, meta } = applyOffsetPagination(allBets, page, limit);
+
+    res.json({ bets, meta });
   } catch (err) {
     next(err);
   }
@@ -182,8 +199,14 @@ export async function getMarketOdds(
     const outcome = req.query.outcome as string | undefined;
 
     if (outcome && !MARKET_ODDS_OUTCOMES.includes(outcome as typeof MARKET_ODDS_OUTCOMES[number])) {
-      res.status(400).json({ error: `Invalid outcome. Must be one of: ${MARKET_ODDS_OUTCOMES.join(', ')}` });
-      return;
+      return next(
+        new AppError(
+          400,
+          `Invalid outcome. Must be one of: ${MARKET_ODDS_OUTCOMES.join(', ')}`,
+          ERROR_CODES.INVALID_REQUEST,
+          { field: 'outcome', received: outcome },
+        ),
+      );
     }
 
     if (outcome) {
@@ -308,11 +331,13 @@ export async function getPortfolio(req: Request, res: Response, next: NextFuncti
     const parseResult = portfolioAddressSchema.safeParse({ address: req.params.address });
     if (!parseResult.success) {
       const errors = parseResult.error.issues.map((e) => ({
-        field: e.path.join('.'),
+        field: e.path.join('.') || '(root)',
         message: e.message,
+        code: e.code,
       }));
-      res.status(400).json({ errors });
-      return;
+      return next(
+        new AppError(400, 'Invalid address format', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { address } = parseResult.data;
@@ -386,9 +411,14 @@ export async function resolveMarket(req: Request, res: Response, next: NextFunct
 
     const parsed = resolveMarketBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      const errors = parsed.error.issues.map((e) => ({ field: e.path.join('.'), message: e.message }));
-      res.status(400).json({ errors });
-      return;
+      const errors = parsed.error.issues.map((e) => ({
+        field: e.path.join('.') || '(root)',
+        message: e.message,
+        code: e.code,
+      }));
+      return next(
+        new AppError(422, 'Validation failed', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { winning_outcome } = parsed.data;
@@ -400,8 +430,9 @@ export async function resolveMarket(req: Request, res: Response, next: NextFunct
     );
 
     if (market.status === 'resolved') {
-      res.status(409).json({ error: 'Market is already resolved' });
-      return;
+      return next(
+        new AppError(409, 'Market is already resolved', ERROR_CODES.MARKET_RESOLVED),
+      );
     }
 
     await OracleService.submitFightResult(market.match_id, winning_outcome);

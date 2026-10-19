@@ -98,6 +98,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { StrKey } from '@stellar/stellar-sdk';
 import { AppError } from '../../utils/AppError';
+import { ERROR_CODES } from '../../constants/errorCodes';
 import { validateQuery, validateBody, validateParams } from '../middleware/validate';
 import * as EngagementService from '../../services/engagement.service';
 
@@ -241,8 +242,9 @@ export async function registerReferral(
       referral_code,
     );
     if (!referral) {
-      res.status(409).json({ error: 'Address already has a referrer' });
-      return;
+      return next(
+        new AppError(409, 'Address already has a referrer', ERROR_CODES.RESOURCE_ALREADY_EXISTS),
+      );
     }
     res.status(201).json(referral);
   } catch (err) {

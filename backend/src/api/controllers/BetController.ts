@@ -10,6 +10,7 @@ import * as BetService from '../../services/BetService';
 import * as MarketService from '../../services/MarketService';
 import { AppError } from '../../utils/AppError';
 import { ERROR_CODES } from '../../constants/errorCodes';
+import { buildPaginationMeta } from '../../utils/pagination';
 
 const claimBodySchema = z.object({
   market_id: z.string().min(1, 'market_id is required'),
@@ -42,11 +43,13 @@ export async function claimWinnings(
     const parsed = claimBodySchema.safeParse(req.body);
     if (!parsed.success) {
       const errors = parsed.error.issues.map((e) => ({
-        field: e.path.join('.'),
+        field: e.path.join('.') || '(root)',
         message: e.message,
+        code: e.code,
       }));
-      res.status(400).json({ errors });
-      return;
+      return next(
+        new AppError(422, 'Validation failed', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { market_id, bettor_address, token_address } = parsed.data;
@@ -82,9 +85,6 @@ export async function getBettorStats(
     const stats = await MarketService.getBettorStats(bettor_address);
     res.status(200).json(stats);
   } catch (err) {
-    if (err instanceof AppError && err.statusCode === 400) {
-      return next(err);
-    }
     next(err);
   }
 }
@@ -93,7 +93,7 @@ export async function getBettorStats(
  * GET /api/bets/:bettor_address
  *
  * Returns paginated bets placed by a given Stellar address.
- * Validates the Stellar address format and returns 400 Bad Request if invalid.
+ * Validates the Stellar address format and returns 422 for invalid addresses.
  */
 export async function getBetsByAddress(
   req: Request,
@@ -105,37 +105,20 @@ export async function getBetsByAddress(
     const page = req.query.page !== undefined ? parseInt(req.query.page as string, 10) : 1;
     const limit = req.query.limit !== undefined ? parseInt(req.query.limit as string, 10) : 50;
 
-    // Validate Stellar address format early and return 400 (not 500) for invalid addresses
-    try {
-      if (!StrKey.isValidEd25519PublicKey(bettor_address)) {
-        throw AppError.badRequest(
-          'Invalid Stellar address format',
-          ERROR_CODES.INVALID_REQUEST
-        );
-      }
-    } catch (validationErr) {
-      // If validation error is already an AppError, rethrow it
-      if (validationErr instanceof AppError) {
-        throw validationErr;
-      }
-      // Otherwise wrap any validation exception as a 400 Bad Request
+    if (!StrKey.isValidEd25519PublicKey(bettor_address)) {
       throw AppError.badRequest(
         'Invalid Stellar address format',
-        ERROR_CODES.INVALID_REQUEST
+        ERROR_CODES.INVALID_REQUEST,
+        { field: 'bettor_address', received: bettor_address },
       );
     }
 
     const result = await BetService.fetchBetsByAddress(bettor_address, page, limit);
     res.status(200).json({
       bets: result.bets,
-      total: result.total,
-      page,
-      limit,
+      meta: buildPaginationMeta(result.total, page, limit),
     });
   } catch (err) {
-    if (err instanceof AppError && err.statusCode === 400) {
-      return next(err);
-    }
     next(err);
   }
 }
@@ -156,11 +139,13 @@ export async function claimRefund(
     const parsed = claimBodySchema.safeParse(req.body);
     if (!parsed.success) {
       const errors = parsed.error.issues.map((e) => ({
-        field: e.path.join('.'),
+        field: e.path.join('.') || '(root)',
         message: e.message,
+        code: e.code,
       }));
-      res.status(400).json({ errors });
-      return;
+      return next(
+        new AppError(422, 'Validation failed', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { market_id, bettor_address, token_address } = parsed.data;

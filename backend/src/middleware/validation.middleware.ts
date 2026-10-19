@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { z, ZodSchema } from "zod";
 import { AppError } from "../utils/AppError";
+import { ERROR_CODES } from "../constants/errorCodes";
 
 // ─── Schema Definitions ──────────────────────────────────────────────────────
 
@@ -71,12 +72,17 @@ export function validateBody(schema: ZodSchema) {
     } catch (error) {
       if (error instanceof z.ZodError) {
         const formattedErrors = error.issues.map((err) => ({
-          field: err.path.join("."),
+          field: err.path.join(".") || '(root)',
           message: err.message,
           code: err.code,
         }));
         return next(
-          new AppError(400, `Validation failed: ${formattedErrors.map((e) => e.message).join("; ")}`),
+          new AppError(
+            422,
+            `Validation failed: ${formattedErrors.map((e) => `${e.field}: ${e.message}`).join("; ")}`,
+            ERROR_CODES.INVALID_REQUEST,
+            formattedErrors,
+          ),
         );
       }
       next(error);
@@ -92,12 +98,17 @@ export function validateQuery(schema: ZodSchema) {
     } catch (error) {
       if (error instanceof z.ZodError) {
         const formattedErrors = error.issues.map((err) => ({
-          field: err.path.join("."),
+          field: err.path.join(".") || '(root)',
           message: err.message,
           code: err.code,
         }));
         return next(
-          new AppError(400, `Query validation failed: ${formattedErrors.map((e) => e.message).join("; ")}`),
+          new AppError(
+            422,
+            `Query validation failed: ${formattedErrors.map((e) => `${e.field}: ${e.message}`).join("; ")}`,
+            ERROR_CODES.INVALID_REQUEST,
+            formattedErrors,
+          ),
         );
       }
       next(error);
@@ -113,12 +124,17 @@ export function validateParams(schema: ZodSchema) {
     } catch (error) {
       if (error instanceof z.ZodError) {
         const formattedErrors = error.issues.map((err) => ({
-          field: err.path.join("."),
+          field: err.path.join(".") || '(root)',
           message: err.message,
           code: err.code,
         }));
         return next(
-          new AppError(400, `Params validation failed: ${formattedErrors.map((e) => e.message).join("; ")}`),
+          new AppError(
+            422,
+            `Params validation failed: ${formattedErrors.map((e) => `${e.field}: ${e.message}`).join("; ")}`,
+            ERROR_CODES.INVALID_REQUEST,
+            formattedErrors,
+          ),
         );
       }
       next(error);

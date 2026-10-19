@@ -3,7 +3,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { pool } from '../../config/db';
 import * as schema from '../../db/schema';
 import { desc, eq, and } from 'drizzle-orm';
+import { Request, Response, NextFunction } from 'express';
 import { AppError } from '../../utils/AppError';
+import { ERROR_CODES } from '../../constants/errorCodes';
+import { buildPaginationMeta } from '../../utils/pagination';
 
 const db = drizzle(pool, { schema });
 
@@ -23,17 +26,12 @@ interface ListProposalsQuery {
  * Cursor-based approach: we sort by created_at DESC and use offset-limit
  * This is effectively keyset pagination; the cursor is the (id, created_at) pair.
  */
-export async function listProposals(req: Request, res: Response) {
+export async function listProposals(req: Request, res: Response, next: NextFunction) {
   try {
     const query = req.query as ListProposalsQuery;
     const page = Math.max(1, parseInt(query.page || '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt(query.limit || '20', 10)));
     const status = query.status?.toLowerCase();
-
-    // Validate pagination params
-    if (isNaN(page) || isNaN(limit)) {
-      throw new AppError('Invalid pagination parameters', 400);
-    }
 
     // Build WHERE clause
     const whereConditions: any[] = [];
@@ -57,7 +55,6 @@ export async function listProposals(req: Request, res: Response) {
       .where(whereConditions.length > 0 ? and(...whereConditions) : undefined);
 
     const totalCount = countResult.length;
-    const totalPages = Math.ceil(totalCount / limit);
 
     // Transform rows to match frontend expectations
     const data = rows.map((row: any) => ({
@@ -65,7 +62,7 @@ export async function listProposals(req: Request, res: Response) {
       type: row.type,
       value: row.value,
       description: row.description,
-      status: row.status.charAt(0).toUpperCase() + row.status.slice(1), // 'active' -> 'Active'
+      status: row.status.charAt(0).toUpperCase() + row.status.slice(1),
       proposer: row.proposer,
       votesFor: parseInt(row.votes_for as string, 10),
       votesAgainst: parseInt(row.votes_against as string, 10),
@@ -77,35 +74,24 @@ export async function listProposals(req: Request, res: Response) {
     res.json({
       success: true,
       data,
-      pagination: {
-        page,
-        limit,
-        total: totalCount,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
-      },
+      meta: buildPaginationMeta(totalCount, page, limit),
     });
   } catch (error) {
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, error: error.message });
-    }
-    console.error('Error listing proposals:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    next(error);
   }
 }
 
 /**
  * Get a single proposal by ID
  */
-export async function getProposal(req: Request, res: Response) {
+export async function getProposal(req: Request, res: Response, next: NextFunction) {
   try {
     const { proposal_id } = req.params;
 
     const row = await db.select().from(schema.proposals).where(eq(schema.proposals.proposal_id, proposal_id)).limit(1);
 
     if (row.length === 0) {
-      throw new AppError('Proposal not found', 404);
+      return next(AppError.notFound('Proposal not found', ERROR_CODES.NOT_FOUND));
     }
 
     const p = row[0];
@@ -125,18 +111,14 @@ export async function getProposal(req: Request, res: Response) {
 
     res.json({ success: true, data });
   } catch (error) {
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, error: error.message });
-    }
-    console.error('Error fetching proposal:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    next(error);
   }
 }
 
 /**
  * Validation middleware for listProposals query parameters
  */
-export function listProposalsValidation(req: Request, res: Response, next: Function) {
+export function listProposalsValidation(req: Request, res: Response, next: NextFunction) {
   try {
     const { page, limit, status } = req.query;
 
@@ -144,29 +126,29 @@ export function listProposalsValidation(req: Request, res: Response, next: Funct
     if (page !== undefined) {
       const p = parseInt(page as string, 10);
       if (isNaN(p) || p < 1) {
-        throw new AppError('page must be a positive integer', 400);
+        throw new AppError(422, 'page must be a positive integer', 'INVALID_REQUEST', { field: 'page' });
       }
     }
 
     if (limit !== undefined) {
       const l = parseInt(limit as string, 10);
       if (isNaN(l) || l < 1 || l > 100) {
-        throw new AppError('limit must be between 1 and 100', 400);
+        throw new AppError(422, 'limit must be between 1 and 100', 'INVALID_REQUEST', { field: 'limit' });
       }
     }
 
     if (status !== undefined) {
       const s = (status as string).toLowerCase();
       if (!['active', 'passed', 'failed', 'executed'].includes(s)) {
-        throw new AppError('status must be one of: active, passed, failed, executed', 400);
+        throw new AppError(422, 'status must be one of: active, passed, failed, executed', 'INVALID_REQUEST', {
+          field: 'status',
+          validValues: ['active', 'passed', 'failed', 'executed'],
+        });
       }
     }
 
     next();
   } catch (error) {
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, error: error.message });
-    }
-    res.status(400).json({ success: false, error: 'Invalid query parameters' });
+    next(error);
   }
 }
