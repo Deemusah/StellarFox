@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { MarketSearchAutocomplete } from './MarketSearchAutocomplete';
 
 export type SortOption = 'newest' | 'ending_soon' | 'biggest_pool';
+import { useEffect, useRef, useState } from 'react';
 
 const WEIGHT_CLASSES = [
   '',
@@ -31,36 +33,36 @@ const STATUS_TABS = [
   { label: 'Resolved', value: 'resolved' },
 ] as const;
 
-const SORT_OPTIONS: { label: string; value: SortOption }[] = [
-  { label: 'Newest',       value: 'newest' },
-  { label: 'Ending Soon',  value: 'ending_soon' },
-  { label: 'Biggest Pool', value: 'biggest_pool' },
+const SORT_OPTIONS = [
+  { label: 'Newest',       value: 'date_desc' },
+  { label: 'Ending Soon',  value: 'date_asc' },
+  { label: 'Biggest Pool', value: 'pool_desc' },
 ];
 
-export interface MarketFilterValues {
-  status: string;
-  search: string;
-  sort: SortOption;
-  weightClass: string;
-}
-
 interface MarketFiltersProps {
-  onChange?: (values: MarketFilterValues) => void;
+  weightClass: string;
+  status: string;
+  sort: string;
+  search: string;
+  onWeightClassChange: (value: string) => void;
+  onStatusChange: (value: string) => void;
+  onSortChange: (value: string) => void;
+  onSearchChange: (value: string) => void;
 }
 
-export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.Element {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  const status     = searchParams.get('status')      ?? '';
-  const sort       = (searchParams.get('sort')       ?? 'newest') as SortOption;
-  const searchParam = searchParams.get('search')     ?? '';
-  const weightClass = searchParams.get('weightClass') ?? '';
-
-  const [searchInput, setSearchInput] = useState(searchParam);
+export function MarketFilters({
+  weightClass,
+  status,
+  sort,
+  search,
+  onWeightClassChange,
+  onStatusChange,
+  onSortChange,
+  onSearchChange,
+}: Readonly<MarketFiltersProps>): JSX.Element {
+  const [searchInput, setSearchInput] = useState(search);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusTabsRef = useRef<HTMLDivElement>(null);
-
   const setParam = useCallback(
     (updates: Record<string, string | null>) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -78,20 +80,17 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   );
 
   useEffect(() => {
-    setSearchInput(searchParam);
-  }, [searchParam]);
+    setSearchInput(search);
+  }, [search]);
 
   const handleSearchChange = (value: string) => {
     setSearchInput(value);
+    setParam({ search: value || null });
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setParam({ search: value || null });
+      onSearchChange(value);
     }, 300);
   };
-
-  useEffect(() => {
-    onChange?.({ status, search: searchParam, sort, weightClass });
-  }, [status, searchParam, sort, weightClass, onChange]);
 
   const handleStatusKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const tabs = Array.from(statusTabsRef.current?.querySelectorAll('[role="tab"]') ?? []) as HTMLElement[];
@@ -115,8 +114,8 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
     <div className="flex flex-wrap gap-3 items-center">
       {/* Weight class dropdown */}
       <select
-        value={weightClass}
-        onChange={(e) => setParam({ weightClass: e.target.value || null })}
+        value={weightClass === 'All Weight Classes' ? '' : weightClass}
+        onChange={(e) => onWeightClassChange(e.target.value)}
         aria-label="Filter by weight class"
         className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
       >
@@ -129,6 +128,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
       {/* Status tabs */}
       <div
         ref={statusTabsRef}
+        id="market-status-filter"
         role="tablist"
         aria-label="Filter by market status"
         className="flex rounded-lg overflow-hidden border border-gray-700"
@@ -138,12 +138,12 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
           <button
             key={tab.value}
             role="tab"
-            aria-selected={status === tab.value}
+            aria-selected={status.toLowerCase() === (tab.value || 'all')}
             aria-label={`Filter by ${tab.label} status`}
-            tabIndex={status === tab.value ? 0 : -1}
-            onClick={() => setParam({ status: tab.value || null })}
+            tabIndex={status.toLowerCase() === (tab.value || 'all') ? 0 : -1}
+            onClick={() => onStatusChange(tab.label)}
             className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-inset ${
-              status === tab.value
+              status.toLowerCase() === (tab.value || 'all')
                 ? 'bg-amber-500 text-black'
                 : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
             }`}
@@ -153,20 +153,21 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         ))}
       </div>
 
+      {/* Fighter name search — autocomplete */}
+      <MarketSearchAutocomplete
       {/* Fighter name search */}
       <input
         type="search"
+        id="market-search"
         value={searchInput}
-        onChange={(e) => handleSearchChange(e.target.value)}
+        onCommit={handleSearchChange}
         placeholder="Search fighters…"
-        aria-label="Search fighters"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 w-48"
       />
 
       {/* Sort dropdown */}
       <select
         value={sort}
-        onChange={(e) => setParam({ sort: e.target.value })}
+        onChange={(e) => onSortChange(e.target.value)}
         aria-label="Sort markets"
         className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500 ml-auto"
       >

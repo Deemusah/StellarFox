@@ -112,8 +112,9 @@ export function BetForm({ market }: BetFormProps): JSX.Element {
 
       {/* Amount input */}
       <div>
-        <label className="block text-xs text-gray-400 mb-1">Amount (XLM)</label>
+        <label htmlFor="bet-form-amount" className="block text-xs text-gray-300 mb-1">Amount (XLM)</label>
         <input
+          id="bet-form-amount"
           type="number"
           min="1"
           step="0.01"
@@ -121,18 +122,21 @@ export function BetForm({ market }: BetFormProps): JSX.Element {
           onChange={(e) => setAmount(e.target.value)}
           placeholder="0.00"
           disabled={isSubmitting}
-          className="w-full bg-gray-800 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50"
+          aria-required="true"
+          aria-describedby="bet-form-amount-hint"
+          aria-invalid={!isAmountValid && amount !== '' ? 'true' : 'false'}
+          className="w-full bg-gray-800 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50"
         />
-        <p className="text-xs text-gray-500 mt-1">Min: 1 XLM</p>
+        <p id="bet-form-amount-hint" className="text-xs text-gray-400 mt-1">Min: 1 XLM</p>
       </div>
 
       {/* Payout preview */}
       <div className="bg-gray-800 rounded-lg px-4 py-3 space-y-1 text-sm">
-        <div className="flex justify-between text-gray-400">
+        <div className="flex justify-between text-gray-300">
           <span>Platform fee</span>
           <span>{market.fee_bps / 100}%</span>
         </div>
-        <div className="flex justify-between font-semibold">
+        <div className="flex justify-between font-semibold text-white">
           <span>Est. payout</span>
           <span>{projectedPayout != null ? `${projectedPayout.toFixed(4)} XLM` : '—'}</span>
         </div>

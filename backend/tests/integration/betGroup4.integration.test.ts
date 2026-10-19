@@ -36,10 +36,13 @@ jest.mock('../../src/services/redis-lua', () => ({
 const { pool } = require('../../src/config/db');
 
 describe('API Module Group 4: Betting Operations & Slippage Guard Endpoints', () => {
-  const validStellarAddress = 'GBZXN7PIRZGNMHGA72YD2MKXT3MYMVGBLMHMT6A2R63FWIFKIIOHPSTA';
+  const validStellarAddress = 'GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI';
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockClient.query.mockReset();
+    mockClient.release.mockReset();
+    (pool.connect as jest.Mock).mockReset();
     (pool.connect as jest.Mock).mockResolvedValue(mockClient);
   });
 
@@ -56,7 +59,7 @@ describe('API Module Group 4: Betting Operations & Slippage Guard Endpoints', ()
       mockClient.query
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({
-          rows: [{ market_id: 'mkt_1', status: 'open', total_pool: '10000000', pool_a: '5000000' }],
+          rows: [{ market_id: 'mkt_1', status: 'open', total_pool: '100000000000', pool_a: '50000000000', min_bet_amount: '1000000' }],
         })
         .mockResolvedValueOnce({
           rows: [{ id: 1, market_id: 'mkt_1', amount: '10000000', side: 'fighter_a' }],
@@ -71,6 +74,42 @@ describe('API Module Group 4: Betting Operations & Slippage Guard Endpoints', ()
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
       expect(res.body.data.id).toBe(1);
+    });
+
+    it('rejects bet below market minimum with 400', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({
+          rows: [{ market_id: 'mkt_1', status: 'open', total_pool: '100000000000', pool_a: '50000000000', min_bet_amount: '1000000' }],
+        })
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await request(app)
+        .post('/api/v2/bets/place')
+        .send({ ...validBetPayload, amount: '500000' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BET_BELOW_MINIMUM');
+    });
+
+    it('accepts bet at the exact minimum amount', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({
+          rows: [{ market_id: 'mkt_1', status: 'open', total_pool: '100000000000', pool_a: '50000000000', min_bet_amount: '1000000' }],
+        })
+        .mockResolvedValueOnce({
+          rows: [{ id: 1, market_id: 'mkt_1', amount: '1000000', side: 'fighter_a' }],
+        })
+        .mockResolvedValueOnce({}) // UPDATE markets
+        .mockResolvedValueOnce({}); // COMMIT
+
+      const res = await request(app)
+        .post('/api/v2/bets/place')
+        .send({ ...validBetPayload, amount: '1000000' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
     });
 
     it('rejects invalid Stellar address with 422', async () => {

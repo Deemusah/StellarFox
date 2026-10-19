@@ -1,0 +1,573 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  REGISTRY: ghcr.io
+  REGISTRY_USERNAME: ${{ github.actor }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # DETECT CHANGES
+  # ============================================================================
+  detect-changes:
+    name: Detect Changed Files
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      contracts: ${{ steps.changes.outputs.contracts }}
+      indexer: ${{ steps.changes.outputs.indexer }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci-cd.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci-cd.yml'
+            contracts:
+              - 'contracts/**'
+              - '.github/workflows/ci-cd.yml'
+            indexer:
+              - 'indexer/**'
+              - '.github/workflows/ci-cd.yml'
+
+  # ============================================================================
+  # BACKEND CI
+  # ============================================================================
+  backend-ci:
+    name: Backend - Test & Build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: bankerchanger
+          POSTGRES_PASSWORD: bankerchanger
+          POSTGRES_DB: bankerchanger
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-node-modules
+        with:
+          path: backend/node_modules
+          key: ${{ runner.os }}-node-modules-backend-${{ hashFiles('backend/package-lock.json') }}
+
+      - name: Install dependencies
+        working-directory: backend
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Validate OpenAPI spec
+        working-directory: backend
+        run: |
+          node -e "
+            const S = require('@apidevtools/swagger-parser');
+            S.validate('openapi.yaml')
+              .then(a => console.log('✓ OpenAPI spec valid:', a.info.title, a.info.version))
+              .catch(e => { console.error('✗ OpenAPI validation failed:', e.message); process.exit(1); });
+          "
+
+      - name: Check migrations
+        working-directory: backend
+        run: npm run migrate:check
+        env:
+          MIGRATION_CHECK_STRICT: 'true'
+
+      - name: Verify Drizzle schema
+        working-directory: backend
+        run: npm run drizzle:check
+        env:
+          DATABASE_URL: postgresql://bankerchanger:bankerchanger@localhost:5432/bankerchanger
+
+      - name: Lint
+        working-directory: backend
+        run: npm run lint
+
+      - name: Build
+        working-directory: backend
+        run: npm run build:prod
+        env:
+          GIT_SHA: ${{ github.sha }}
+
+      - name: Unit Tests
+        working-directory: backend
+        run: npm test
+        env:
+          DATABASE_URL: postgresql://bankerchanger:bankerchanger@localhost:5432/bankerchanger
+          REDIS_URL: redis://localhost:6379
+
+      - name: Integration Tests
+        working-directory: backend
+        run: npm run test:integration
+        env:
+          DATABASE_URL: postgresql://bankerchanger:bankerchanger@localhost:5432/bankerchanger
+          REDIS_URL: redis://localhost:6379
+
+  backend-docker:
+    name: Backend - Build & Push Docker Image
+    needs: backend-ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/backend
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # FRONTEND CI
+  # ============================================================================
+  frontend-ci:
+    name: Frontend - Test & Build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-node-modules
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-modules-frontend-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install dependencies
+        working-directory: frontend
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type check
+        working-directory: frontend
+        run: |
+          if grep -q '"type-check"' package.json; then
+            npm run type-check
+          fi
+
+      - name: Unit Tests
+        working-directory: frontend
+        run: npm test
+        env:
+          CI: true
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+          NEXT_PUBLIC_STELLAR_NETWORK: testnet
+
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/.next/
+          retention-days: 1
+
+  frontend-e2e:
+    name: Frontend - E2E Tests
+    needs: frontend-ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-node-modules
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-modules-frontend-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install dependencies
+        working-directory: frontend
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/.next/
+
+      - name: Install Playwright
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start Next.js server
+        working-directory: frontend
+        run: |
+          npm run start &
+          sleep 5
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+          NEXT_PUBLIC_STELLAR_NETWORK: testnet
+          PORT: 3000
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run E2E tests
+        working-directory: frontend
+        run: npm run test:e2e
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-e2e-results
+          path: frontend/test-results/
+          retention-days: 7
+
+  frontend-docker:
+    name: Frontend - Build & Push Docker Image
+    needs: frontend-ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/frontend
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=http://localhost:3001
+            NEXT_PUBLIC_STELLAR_NETWORK=testnet
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # INDEXER CI
+  # ============================================================================
+  indexer-ci:
+    name: Indexer - Test & Build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.indexer == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: indexer/package-lock.json
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-node-modules
+        with:
+          path: indexer/node_modules
+          key: ${{ runner.os }}-node-modules-indexer-${{ hashFiles('indexer/package-lock.json') }}
+
+      - name: Install dependencies
+        working-directory: indexer
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Lint
+        working-directory: indexer
+        run: |
+          if grep -q '"lint"' package.json; then
+            npm run lint
+          fi
+
+      - name: Build
+        working-directory: indexer
+        run: npm run build
+
+      - name: Unit Tests
+        working-directory: indexer
+        run: npm test
+        env:
+          CI: true
+
+  indexer-docker:
+    name: Indexer - Build & Push Docker Image
+    needs: indexer-ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/indexer
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./indexer
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # CONTRACTS CI
+  # ============================================================================
+  contracts-ci:
+    name: Contracts - Build & Audit
+    needs: detect-changes
+    if: needs.detect-changes.outputs.contracts == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/Cargo.lock') }}
+
+      - name: Clippy lints
+        working-directory: contracts
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build WASM
+        working-directory: contracts
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Audit dependencies
+        working-directory: contracts
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+
+  # ============================================================================
+  # STATUS CHECK
+  # ============================================================================
+  ci-success:
+    name: CI Pipeline Success
+    needs: [backend-ci, frontend-ci, indexer-ci, contracts-ci]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check CI status
+        run: |
+          if [[ "${{ needs.backend-ci.result }}" == "failure" || \
+                "${{ needs.frontend-ci.result }}" == "failure" || \
+                "${{ needs.indexer-ci.result }}" == "failure" || \
+                "${{ needs.contracts-ci.result }}" == "failure" ]]; then
+            echo "❌ CI pipeline failed"
+            exit 1
+          fi
+          echo "✅ All CI checks passed"
+
+  docker-success:
+    name: Docker Build Success
+    needs: [backend-docker, frontend-docker, indexer-docker]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+      - name: Check Docker builds status
+        run: |
+          if [[ "${{ needs.backend-docker.result }}" == "failure" || \
+                "${{ needs.frontend-docker.result }}" == "failure" || \
+                "${{ needs.indexer-docker.result }}" == "failure" ]]; then
+            echo "❌ Docker builds failed"
+            exit 1
+          fi
+          echo "✅ All Docker images built and pushed"
