@@ -10,6 +10,8 @@ export function errorMiddleware(
   res: Response,
   _next: NextFunction,
 ): void {
+  const requestId = (_req as Request & { requestId?: string }).requestId;
+
   if (err instanceof AppError) {
     if (err.statusCode >= 500) {
       logger.error({
@@ -17,6 +19,7 @@ export function errorMiddleware(
         statusCode: err.statusCode,
         code: err.code,
         details: err.details,
+        requestId,
         ...(!isProd && { stack: err.stack }),
       });
     }
@@ -29,6 +32,7 @@ export function errorMiddleware(
         message: err.message,
         ...(err.code && { code: err.code }),
         ...(err.details !== undefined && { details: err.details }),
+        ...(requestId && { requestId }),
       },
     });
     return;
@@ -37,6 +41,7 @@ export function errorMiddleware(
   const message = err instanceof Error ? err.message : 'Internal server error';
   logger.error({
     message,
+    requestId,
     ...(!isProd && { stack: err instanceof Error ? err.stack : undefined }),
   });
 
@@ -46,6 +51,7 @@ export function errorMiddleware(
     error: {
       statusCode: 500,
       message: isProd ? 'Internal server error' : message,
+      ...(requestId && { requestId }),
     },
   });
 }

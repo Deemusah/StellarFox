@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { AppError } from '../utils/AppError';
 import { getEnv } from '../config/env';
 import { isSessionRevoked } from '../services/auth.service';
+import { authenticatedUserRateLimit } from './rate-limit.middleware';
 
 export interface AdminJwtPayload extends jwt.JwtPayload {
   role: 'admin';
@@ -36,6 +37,11 @@ export function requireAdminJwt(req: Request, _res: Response, next: NextFunction
       return next(new AppError(403, 'Forbidden: admin role required'));
     }
     req.admin = payload;
+    if (typeof payload.sub === 'string') {
+      (req as unknown as Record<string, unknown>).userId = payload.sub;
+      void authenticatedUserRateLimit(req, _res, next);
+      return;
+    }
     next();
   } catch {
     next(new AppError(403, 'Invalid or expired token'));
@@ -75,7 +81,7 @@ export async function requireAdmin(req: Request, _res: Response, next: NextFunct
 
     (req as unknown as Record<string, unknown>).userId = userId;
     (req as unknown as Record<string, unknown>).sessionVersion = sessionVersion;
-    next();
+    return authenticatedUserRateLimit(req, _res, next);
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(401, 'Invalid or expired token'));
   }

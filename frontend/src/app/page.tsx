@@ -1,28 +1,56 @@
 // ============================================================
 // BANKERCHANGER — Home Page (/)
-// Lists all boxing markets with filters, sorting, and pagination.
+// Market discovery with division categories, filters, sorting, and pagination.
+// Lists markets with category filters, sorting, and pagination.
+// Lists all boxing markets with filters, sorting, and infinite scroll.
 // ============================================================
 
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useInfiniteMarkets } from '../hooks/useInfiniteMarkets';
+import { useCallback, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMarkets } from '../hooks/useMarkets';
+import { useDashboardShortcuts } from '../hooks/useDashboardShortcuts';
 import { MarketCard } from '../components/market/MarketCard';
 import { MarketCardSkeleton } from '../components/market/MarketCardSkeleton';
 import { StatsBanner } from '../components/ui/StatsBanner';
 import { MarketFilters } from '../components/market/MarketFilters';
+import { MARKET_CATEGORY_FILTERS } from '../services/api';
+import { ScrollSentinel } from '../components/ui/ScrollSentinel';
+import { downloadMarketData, fetchAllMarkets } from '../utils/marketExport';
 
 const LIMIT = 12;
+const DIVISION_CATEGORIES = [
+  { label: 'All divisions', value: '' },
+  { label: 'Heavyweight', value: 'Heavyweight' },
+  { label: 'Middleweight', value: 'Middleweight' },
+  { label: 'Welterweight', value: 'Welterweight' },
+  { label: 'Lightweight', value: 'Lightweight' },
+];
 
 export default function HomePage(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const weightClass = searchParams.get('weight_class') ?? '';
+  const status = searchParams.get('status') ?? '';
   const weightClass = searchParams.get('weight_class') ?? 'All Weight Classes';
+  const categoryParam = searchParams.get('category');
+  const category = MARKET_CATEGORY_FILTERS.find((value) => value === categoryParam);
   const status = searchParams.get('status') ?? 'All';
   const sort = searchParams.get('sort') ?? 'date_desc';
+  const search = searchParams.get('search') ?? '';
   const page = Number(searchParams.get('page') ?? '1');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const openHelp = useCallback(() => setHelpOpen(true), []);
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+  useDashboardShortcuts({ onHelp: openHelp, onCloseHelp: closeHelp });
 
   const setParam = useCallback(
     (key: string, value: string | null) => {
@@ -32,46 +60,138 @@ export default function HomePage(): JSX.Element {
       } else {
         params.set(key, value);
       }
-      // Reset to page 1 on filter/sort change
-      if (key !== 'page') params.delete('page');
       router.replace(`?${params.toString()}`);
     },
     [router, searchParams],
   );
 
+  const filters = {
+    weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+    status: status === 'All' ? undefined : status.toLowerCase(),
+    sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
+  };
+
+  const { markets, total, isLoading, isFetchingMore, hasMore, loadMore, error, reset } =
+    useInfiniteMarkets(filters, LIMIT);
+
+  // Reset accumulated data whenever filters change so the list restarts.
+  const prevFiltersRef = useRef(JSON.stringify(filters));
+  useEffect(() => {
+    const key = JSON.stringify(filters);
+    if (key !== prevFiltersRef.current) {
+      prevFiltersRef.current = key;
+      reset();
+    }
+  });
   const { markets, total, isLoading, error } = useMarkets(
     {
+      weight_class: weightClass || undefined,
+      status: status || undefined,
+      search: searchParams.get('search') || undefined,
       weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+      category,
       status: status === 'All' ? undefined : status.toLowerCase(),
+      search: search || undefined,
       sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
     },
     { page, limit: LIMIT },
   );
 
-  const totalPages = Math.ceil(total / LIMIT);
   const showSkeleton = isLoading && markets.length === 0;
 
+  const handleExport = async (format: 'csv' | 'json') => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const allMarkets = await fetchAllMarkets({
+        weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+        status: status === 'All' ? undefined : status.toLowerCase(),
+        search: search || undefined,
+        sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
+      });
+      downloadMarketData(allMarkets, format);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Unable to export markets.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
-    <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+    <main className="mx-auto w-full max-w-6xl space-y-6 px-4 py-5 sm:px-6 sm:py-8">
       <div>
         <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>
-        <p className="text-gray-400 text-sm mt-1">Decentralized boxing prediction markets on Stellar</p>
+        <p className="mt-1 text-sm text-gray-400">Decentralized boxing prediction markets on Stellar</p>
+        <p className="text-gray-400 text-sm mt-1">Decentralized combat sports prediction markets on Stellar</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>
+            <p className="text-gray-400 text-sm mt-1">Decentralized boxing prediction markets on Stellar</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => void handleExport('csv')} disabled={exporting} className="rounded bg-gray-800 px-3 py-2 text-sm text-white hover:bg-gray-700 disabled:opacity-50">
+              {exporting ? 'Exporting…' : 'Export CSV'}
+            </button>
+            <button type="button" onClick={() => void handleExport('json')} disabled={exporting} className="rounded bg-gray-800 px-3 py-2 text-sm text-white hover:bg-gray-700 disabled:opacity-50">
+              Export JSON
+            </button>
+            <button type="button" onClick={openHelp} aria-label="Show keyboard shortcuts" className="rounded bg-gray-800 px-3 py-2 text-sm text-white hover:bg-gray-700">
+              Shortcuts (?)
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Stats Banner */}
       <StatsBanner />
 
+      <section className="space-y-3" aria-labelledby="division-heading">
+        <div>
+          <p className="text-xs font-semibold uppercase text-amber-400">Discover</p>
+          <h2 id="division-heading" className="text-lg font-bold text-white">Browse by division</h2>
+        </div>
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+          {DIVISION_CATEGORIES.map((category) => (
+            <button
+              key={category.value || 'all'}
+              type="button"
+              aria-pressed={weightClass === category.value}
+              onClick={() => setParam('weight_class', category.value || null)}
+              className={`min-h-11 shrink-0 rounded-lg border px-4 text-sm font-medium transition-colors ${
+                weightClass === category.value
+                  ? 'border-amber-400 bg-amber-400 text-gray-950'
+                  : 'border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500 hover:text-white'
+              }`}
+            >
+              {category.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-4" aria-labelledby="markets-heading">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold uppercase text-gray-500">Market board</p>
+            <h2 id="markets-heading" className="text-xl font-bold text-white">
+              {status ? `${status[0].toUpperCase()}${status.slice(1)} markets` : 'All markets'}
+            </h2>
+          </div>
+          <p className="text-sm text-gray-400">{total.toLocaleString()} markets</p>
       {/* Filter bar */}
       <MarketFilters
         weightClass={weightClass}
         status={status}
         sort={sort}
+        search={search}
         onWeightClassChange={(value) =>
           setParam('weight_class', value === 'All Weight Classes' ? null : value)
         }
         onStatusChange={(value) => setParam('status', value === 'All' ? null : value.toLowerCase())}
         onSortChange={(value) => setParam('sort', value)}
+        onSearchChange={(value) => setParam('search', value || null)}
       />
+
+      {exportError && <p role="alert" className="text-red-400 text-sm">Export failed: {exportError}</p>}
 
       {/* Error banner */}
       {error && (
@@ -83,44 +203,106 @@ export default function HomePage(): JSX.Element {
       {/* Market grid */}
       {showSkeleton ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 12 }).map((_, i) => (
+          {Array.from({ length: LIMIT }).map((_, i) => (
             <MarketCardSkeleton key={i} />
           ))}
         </div>
-      ) : markets.length === 0 ? (
+      ) : markets.length === 0 && !isLoading ? (
         <p className="text-gray-500 text-center py-16">
           No markets found. Try changing your filters.
         </p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {markets.map((m) => (
-            <MarketCard key={m.market_id} market={m} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {markets.map((m) => (
+              <MarketCard key={m.market_id} market={m} />
+            ))}
+            {/* Skeleton cards appended while fetching more (fills the row) */}
+            {isFetchingMore &&
+              Array.from({ length: 3 }).map((_, i) => (
+                <MarketCardSkeleton key={`skeleton-more-${i}`} />
+              ))}
+          </div>
+
+          {/* Scroll sentinel — triggers loadMore and shows spinner/end message */}
+          <ScrollSentinel
+            onLoadMore={loadMore}
+            hasMore={hasMore}
+            isLoading={isFetchingMore}
+            endMessage={`All ${total} markets loaded`}
+          />
+        </>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-4 pt-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => setParam('page', String(page - 1))}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white disabled:opacity-40 hover:bg-gray-700 disabled:cursor-not-allowed"
-          >
-            ← Prev
-          </button>
-          <span className="text-gray-400 text-sm">
-            {page} / {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => setParam('page', String(page + 1))}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white disabled:opacity-40 hover:bg-gray-700 disabled:cursor-not-allowed"
-          >
-            Next →
-          </button>
+      {helpOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeHelp();
+          }}
+        >
+          <section role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-white shadow-2xl">
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <h2 id="shortcuts-title" className="text-lg font-bold">Keyboard shortcuts</h2>
+              <button type="button" onClick={closeHelp} aria-label="Close shortcuts" className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white">Close</button>
+            </div>
+            <dl className="space-y-3 text-sm">
+              <div className="flex justify-between gap-6"><dt className="text-gray-300">Focus search</dt><dd><kbd>/</kbd></dd></div>
+              <div className="flex justify-between gap-6"><dt className="text-gray-300">Focus status filters</dt><dd><kbd>F</kbd></dd></div>
+              <div className="flex justify-between gap-6"><dt className="text-gray-300">Show shortcuts</dt><dd><kbd>?</kbd></dd></div>
+              <div className="flex justify-between gap-6"><dt className="text-gray-300">Close dialog</dt><dd><kbd>Esc</kbd></dd></div>
+            </dl>
+          </section>
         </div>
-      )}
+
+        <MarketFilters />
+
+        {error && (
+          <p className="rounded-lg bg-red-900/20 px-4 py-2 text-sm text-red-400">
+            Failed to load markets: {error.message}
+          </p>
+        )}
+
+        {showSkeleton ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <MarketCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : markets.length === 0 ? (
+          <p className="py-16 text-center text-gray-500">
+            No markets found. Try changing your filters.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {markets.map((m) => (
+              <MarketCard key={m.market_id} market={m} />
+            ))}
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-4 pt-2">
+            <button
+              disabled={page <= 1}
+              onClick={() => setParam('page', String(page - 1))}
+              className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <span className="text-sm text-gray-400">
+              {page} / {totalPages}
+            </span>
+            <button
+              disabled={page >= totalPages}
+              onClick={() => setParam('page', String(page + 1))}
+              className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </section>
     </main>
   );
 }

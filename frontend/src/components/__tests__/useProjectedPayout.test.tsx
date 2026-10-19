@@ -66,6 +66,7 @@ describe('useProjectedPayout', () => {
       match_id: 'match-1',
       fighter_a: 'Alpha',
       fighter_b: 'Beta',
+      category: 'BOXING',
       weight_class: 'Heavyweight',
       title_fight: false,
       venue: 'Arena',

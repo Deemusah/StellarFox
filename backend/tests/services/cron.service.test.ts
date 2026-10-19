@@ -2,6 +2,7 @@ import {
   setDbAdapter,
   deleteExpiredSessions,
   deleteExpiredResetTokens,
+  deleteExpiredPredictions,
   softDeleteOldNotifications,
   archiveFailedDistributions,
   type CronDbAdapter,
@@ -11,6 +12,7 @@ import {
 jest.mock('../../src/services/metrics.service', () => ({
   cronSessionsDeleted: { inc: jest.fn() },
   cronResetTokensDeleted: { inc: jest.fn() },
+  cronPredictionsDeleted: { inc: jest.fn() },
   cronNotificationsSoftDeleted: { inc: jest.fn() },
   cronDistributionsArchived: { inc: jest.fn() },
 }));
@@ -18,6 +20,7 @@ jest.mock('../../src/services/metrics.service', () => ({
 import {
   cronSessionsDeleted,
   cronResetTokensDeleted,
+  cronPredictionsDeleted,
   cronNotificationsSoftDeleted,
   cronDistributionsArchived,
 } from '../../src/services/metrics.service';
@@ -27,6 +30,7 @@ function makeAdapter(overrides: Partial<CronDbAdapter> = {}): CronDbAdapter {
   return {
     deleteExpiredSessions: jest.fn().mockResolvedValue(0),
     deleteExpiredResetTokens: jest.fn().mockResolvedValue(0),
+    deleteExpiredPredictions: jest.fn().mockResolvedValue(0),
     softDeleteOldNotifications: jest.fn().mockResolvedValue(0),
     archiveFailedDistributions: jest.fn().mockResolvedValue(0),
     writeAuditLog: jest.fn().mockResolvedValue(undefined),
@@ -95,6 +99,29 @@ describe('cron.service', () => {
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
+  describe('deleteExpiredPredictions', () => {
+    it('calls adapter.deleteExpiredPredictions and returns row count', async () => {
+      const adapter = makeAdapter({
+        deleteExpiredPredictions: jest.fn().mockResolvedValue(8),
+      });
+      setDbAdapter(adapter);
+
+      const result = await deleteExpiredPredictions();
+
+      expect(adapter.deleteExpiredPredictions).toHaveBeenCalledTimes(1);
+      expect(result).toBe(8);
+    });
+
+    it('increments Prometheus counter by the number of deleted rows', async () => {
+      setDbAdapter(makeAdapter({ deleteExpiredPredictions: jest.fn().mockResolvedValue(2) }));
+
+      await deleteExpiredPredictions();
+
+      expect((cronPredictionsDeleted.inc as jest.Mock)).toHaveBeenCalledWith(2);
+    });
+  });
+
+  // 4 ─────────────────────────────────────────────────────────────────────────
   describe('softDeleteOldNotifications', () => {
     it('calls adapter.softDeleteOldNotifications and returns row count', async () => {
       const adapter = makeAdapter({

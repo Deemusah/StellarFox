@@ -27,6 +27,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
     match_id: 'fight-1',
     fighter_a: 'Ali',
     fighter_b: 'Frazier',
+    category: 'BOXING',
     weight_class: 'heavyweight',
     title_fight: false,
     venue: 'MSG',
@@ -49,7 +50,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
 }
 
 const MARKET_OPEN = makeMarket({ market_id: 'mkt-1', status: 'open' });
-const MARKET_RESOLVED = makeMarket({ market_id: 'mkt-2', status: 'resolved' });
+const MARKET_RESOLVED = makeMarket({ market_id: 'mkt-2', status: 'resolved', category: 'MMA' });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 describe('MarketService', () => {
@@ -111,6 +112,22 @@ describe('MarketService', () => {
     const result = await getMarkets({ status: 'open' });
     expect(result.total).toBe(1);
     expect(result.markets[0].status).toBe('open');
+  });
+
+  it('getMarkets() filters by a leaf category', async () => {
+    const result = await getMarkets({ category: 'MMA' });
+
+    expect(result.total).toBe(1);
+    expect(result.markets[0].category).toBe('MMA');
+  });
+
+  it('getMarkets() includes all descendant categories for a parent category', async () => {
+    const result = await getMarkets({ category: 'COMBAT_SPORTS' });
+
+    expect(result.total).toBe(2);
+    expect(result.markets.map((market) => market.category)).toEqual(
+      expect.arrayContaining(['BOXING', 'MMA']),
+    );
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
@@ -224,6 +241,85 @@ describe('MarketService', () => {
     });
     const result = await getMarkets({ fighter: 'mayweather' });
     expect(result.total).toBe(1);
+  });
+
+  it('getMarkets() full-text searches names and descriptive metadata case-insensitively', async () => {
+    const match = makeMarket({
+      market_id: 'mkt-search-match',
+      fighter_a: 'Canelo Alvarez',
+      fighter_b: 'Gennady Golovkin',
+      weight_class: 'Middleweight',
+      venue: 'Madison Square Garden',
+    });
+    const noMatch = makeMarket({
+      market_id: 'mkt-search-no-match',
+      fighter_a: 'Tyson Fury',
+      fighter_b: 'Oleksandr Usyk',
+      weight_class: 'Heavyweight',
+      venue: 'Wembley Stadium',
+    });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([match, noMatch]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+
+    const result = await getMarkets({ search: 'canelo garden' });
+
+    expect(result.total).toBe(1);
+    expect(result.markets[0].market_id).toBe('mkt-search-match');
+
+    const partialTokenResult = await getMarkets({ search: 'can' });
+    expect(partialTokenResult.total).toBe(0);
+  });
+
+  it('getMarkets() filters by category, status, and date range before pagination', async () => {
+    const matching = makeMarket({
+      market_id: 'mkt-filter-match',
+      status: 'open',
+      weight_class: 'Middleweight',
+      scheduled_at: new Date('2026-06-15T00:00:00Z'),
+    });
+    const wrongCategory = makeMarket({
+      market_id: 'mkt-filter-category',
+      status: 'open',
+      weight_class: 'Heavyweight',
+      scheduled_at: new Date('2026-06-15T00:00:00Z'),
+    });
+    const wrongStatus = makeMarket({
+      market_id: 'mkt-filter-status',
+      status: 'resolved',
+      weight_class: 'Middleweight',
+      scheduled_at: new Date('2026-06-15T00:00:00Z'),
+    });
+    const wrongDate = makeMarket({
+      market_id: 'mkt-filter-date',
+      status: 'open',
+      weight_class: 'Middleweight',
+      scheduled_at: new Date('2026-07-15T00:00:00Z'),
+    });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([matching, wrongCategory, wrongStatus, wrongDate]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+
+    const result = await getMarkets(
+      {
+        category: 'middleweight',
+        status: 'open',
+        dateFrom: new Date('2026-06-01T00:00:00Z'),
+        dateTo: new Date('2026-06-30T23:59:59Z'),
+      },
+      { page: 1, limit: 1 },
+    );
+
+    expect(result.total).toBe(1);
+    expect(result.markets.map((market) => market.market_id)).toEqual(['mkt-filter-match']);
   });
 
   // 12 ────────────────────────────────────────────────────────────────────────

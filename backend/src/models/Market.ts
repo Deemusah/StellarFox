@@ -4,6 +4,8 @@
 // Contributors: do not add business logic here — model only.
 // ============================================================
 
+import type { MarketCategory } from './MarketCategory';
+
 export interface Market {
   /** Auto-increment primary key */
   id: number;
@@ -15,6 +17,7 @@ export interface Market {
   match_id: string;
   fighter_a: string;
   fighter_b: string;
+  category: MarketCategory;
   weight_class: string;
   title_fight: boolean;
   venue: string;
@@ -39,6 +42,19 @@ export interface Market {
   deleted_by?: string | null;
   /** Stellar ledger sequence at which this market was created */
   ledger_sequence: number;
+}
+
+export interface ProbabilitySnapshot {
+  market_id: string;
+  sampled_at: Date;
+  source: 'interval' | 'event';
+  probability_a: number;
+  probability_b: number;
+  probability_draw: number;
+  pool_a: string;
+  pool_b: string;
+  pool_draw: string;
+  total_pool: string;
 }
 
 export type MarketStatusDB =

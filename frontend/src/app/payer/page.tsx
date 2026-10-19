@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { getConnectedAddress, markPaid } from '@/services/wallet';
 import { TxStatusToast } from '@/components/ui/TxStatusToast';
+import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog';
 import type { Invoice, TxStatus } from '@/types';
 
 // Mock data to simulate the ILN invoices within this app
@@ -46,6 +47,7 @@ export default function PayerDashboard() {
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [undoInvoice, setUndoInvoice] = useState<Invoice | null>(null);
   
   const [txStatus, setTxStatus] = useState<TxStatus>({
     hash: null,
@@ -80,6 +82,7 @@ export default function PayerDashboard() {
       const hash = await markPaid(selectedInvoice.id);
       
       setTxStatus({ hash, status: 'success', error: null });
+      setUndoInvoice(null);
       
       // Remove the settled invoice from the list (or we could change its status to Paid, 
       // but the requirement is to show Funded invoices, so it disappears or changes badge)
@@ -90,14 +93,22 @@ export default function PayerDashboard() {
 
       setTimeout(() => {
         setSelectedInvoice(null);
-        // Optionally remove from list after a delay
         setInvoices(prev => prev.filter(inv => inv.id !== selectedInvoice.id));
+        setUndoInvoice({ ...selectedInvoice, status: 'Paid' });
       }, 3000);
 
     } catch (err: any) {
       setTxStatus({ hash: null, status: 'error', error: err.message });
       setSelectedInvoice(null);
     }
+  };
+
+  const handleUndoRemoval = () => {
+    if (!undoInvoice) return;
+    setInvoices((prev) => prev.some((invoice) => invoice.id === undoInvoice.id)
+      ? prev
+      : [...prev, undoInvoice]);
+    setUndoInvoice(null);
   };
 
   if (!connectedAddress) {
@@ -192,53 +203,41 @@ export default function PayerDashboard() {
         )}
       </div>
 
+      {undoInvoice && (
+        <div role="status" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-gray-700 bg-gray-900 px-4 py-3 text-sm">
+          <p className="text-gray-300">{undoInvoice.id} was hidden from this dashboard. The payment remains settled.</p>
+          <button type="button" onClick={handleUndoRemoval} className="font-semibold text-amber-400 hover:text-amber-300">
+            Undo removal
+          </button>
+        </div>
+      )}
+
       {/* Settle Confirm Modal */}
       {selectedInvoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-6">
-              <h3 className="text-xl font-bold mb-2">Confirm Settlement</h3>
-              <p className="text-gray-300 mb-6">
-                You are about to send <span className="font-bold text-white">{selectedInvoice.amount.toLocaleString()} USDC</span> to settle invoice <span className="font-mono text-white">#{selectedInvoice.id}</span>.
-              </p>
-              
-              <div className="bg-gray-800 p-4 rounded-lg mb-6">
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-gray-400">Freelancer</span>
-                  <span className="font-mono">{selectedInvoice.freelancer}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Network Fee</span>
-                  <span className="text-gray-300">~0.00001 XLM</span>
-                </div>
+        <ConfirmationDialog
+          title="Confirm Settlement"
+          confirmLabel="Confirm & Pay"
+          busyLabel="Settling..."
+          busy={['signing', 'broadcasting', 'confirming'].includes(txStatus.status)}
+          onCancel={() => setSelectedInvoice(null)}
+          onConfirm={() => void handleSettleConfirm()}
+        >
+          <>
+            <p className="mb-6">
+              You are about to send <span className="font-bold text-white">{selectedInvoice.amount.toLocaleString()} USDC</span> to settle invoice <span className="font-mono text-white">#{selectedInvoice.id}</span>.
+            </p>
+            <div className="rounded bg-gray-800 p-4">
+              <div className="mb-2 flex justify-between gap-3 text-sm">
+                <span className="text-gray-400">Freelancer</span>
+                <span className="font-mono">{selectedInvoice.freelancer}</span>
               </div>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setSelectedInvoice(null)}
-                  disabled={['signing','broadcasting','confirming'].includes(txStatus.status)}
-                  className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-white rounded font-medium transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSettleConfirm}
-                  disabled={['signing','broadcasting','confirming'].includes(txStatus.status)}
-                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white rounded font-medium transition-colors flex justify-center items-center gap-2"
-                >
-                  {['signing','broadcasting','confirming'].includes(txStatus.status) ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      Settling...
-                    </>
-                  ) : (
-                    'Confirm & Pay'
-                  )}
-                </button>
+              <div className="flex justify-between gap-3 text-sm">
+                <span className="text-gray-400">Network Fee</span>
+                <span className="text-gray-300">~0.00001 XLM</span>
               </div>
             </div>
-          </div>
-        </div>
+          </>
+        </ConfirmationDialog>
       )}
 
       <TxStatusToast txStatus={txStatus} onDismiss={() => setTxStatus({ hash: null, status: 'idle', error: null })} />

@@ -19,9 +19,13 @@ describe('fetchMarkets', () => {
 
   it('appends filters and pagination as query params', async () => {
     const spy = mockFetch(emptyList);
-    await fetchMarkets({ status: 'open', weight_class: 'heavyweight' }, { page: 2, limit: 5 });
+    await fetchMarkets(
+      { status: 'open', category: 'MMA', weight_class: 'heavyweight' },
+      { page: 2, limit: 5 },
+    );
     const url = spy.mock.calls[0][0] as string;
     expect(url).toContain('status=open');
+    expect(url).toContain('category=MMA');
     expect(url).toContain('weight_class=heavyweight');
     expect(url).toContain('page=2');
     expect(url).toContain('limit=5');
