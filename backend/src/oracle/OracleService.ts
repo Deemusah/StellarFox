@@ -7,7 +7,7 @@
 import { verify as cryptoVerify, createPublicKey } from 'crypto';
 import { Address, Keypair, xdr } from '@stellar/stellar-sdk';
 import { pool } from '../config/db';
-import { invokeContract } from '../services/StellarService';
+import { invokeContractProtected } from '../services/StellarService';
 import { logger } from '../utils/logger';
 import { cacheGet, cacheSet, redis } from '../services/cache.service';
 import { incrWithExpire } from '../services/redis-lua';
@@ -515,7 +515,7 @@ export async function runAutoResolutionJob(): Promise<{ resolved: number; skippe
           const callerScVal = Address.fromString(callerAddress).toScVal();
           const reasonScVal = xdr.ScVal.scvString('auto-cancelled: fight result not confirmed within deadline');
 
-          await invokeContract(contract_address, 'cancel_market', [callerScVal, reasonScVal]);
+          await invokeContractProtected(contract_address, 'cancel_market', [callerScVal, reasonScVal]);
           stats.resolved++;
           logger.info({ market_id, match_id }, 'runAutoResolutionJob: market auto-cancelled');
           await clearFailureTracking(market_id);
@@ -679,8 +679,8 @@ export async function submitFightResult(
       rawPubKey,
     );
 
-    // Step 5: Call StellarService.invokeContract
-    const tx_hash = await invokeContract(contract_address, 'resolve_market', [oracleScVal, reportScVal]);
+    // Step 5: Call StellarService.invokeContractProtected (circuit breaker wrapped)
+    const tx_hash = await invokeContractProtected(contract_address, 'resolve_market', [oracleScVal, reportScVal]);
 
     // Step 6: Update report to applied
     const updateResult = await pool.query(
@@ -796,7 +796,7 @@ export async function adminOverrideResult(
   const outcomeIndex = OUTCOME_INDEX[outcome];
   const adminScVal = addressToScVal(adminAddress);
   const outcomeScVal = outcomeToScVal(outcomeIndex);
-  const tx_hash = await invokeContract(contract_address, 'resolve_dispute', [adminScVal, outcomeScVal]);
+  const tx_hash = await invokeContractProtected(contract_address, 'resolve_dispute', [adminScVal, outcomeScVal]);
 
   // Record outcome in DB
   await pool.query(
@@ -844,7 +844,7 @@ export async function raiseDispute(
   // Build ScVal args for dispute_market(admin: Address, reason: String)
   const adminScVal = addressToScVal(adminAddress);
   const reasonScVal = xdr.ScVal.scvString(`Dispute raised: outcome=${outcome}`);
-  const tx_hash = await invokeContract(contract_address, 'dispute_market', [adminScVal, reasonScVal]);
+  const tx_hash = await invokeContractProtected(contract_address, 'dispute_market', [adminScVal, reasonScVal]);
 
   // Record outcome in DB
   await pool.query(

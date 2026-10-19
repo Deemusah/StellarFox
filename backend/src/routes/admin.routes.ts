@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/AppError';
-import { flagDispute, investigateDispute, cancelMarket, resolveDispute, listDisputes, processRefunds, bulkPause, bulkCancel } from '../api/controllers/AdminController';
+import { flagDispute, investigateDispute, cancelMarket, resolveDispute, listDisputes, processRefunds, bulkPause, bulkCancel, bulkUpdate } from '../api/controllers/AdminController';
 import {
   logExportAudit,
   streamUsersExport,
@@ -255,6 +255,83 @@ router.post('/markets/bulk-pause', requireAdmin, async (req: Request, res: Respo
  */
 router.post('/markets/bulk-cancel', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try { await bulkCancel(req, res); } catch (err) { next(err); }
+});
+
+/**
+ * @swagger
+ * /admin/markets/bulk-update:
+ *   post:
+ *     summary: Update multiple markets in a single request (admin only)
+ *     description: >
+ *       Updates up to 50 markets at once. Supported fields: fee_bps,
+ *       lock_before_secs, scheduled_at, venue, status. Status transitions
+ *       are validated against the market state machine.
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [updates]
+ *             properties:
+ *               updates:
+ *                 type: array
+ *                 maxItems: 50
+ *                 items:
+ *                   type: object
+ *                   required: [market_id]
+ *                   properties:
+ *                     market_id:
+ *                       type: string
+ *                     fee_bps:
+ *                       type: integer
+ *                       minimum: 0
+ *                       maximum: 1000
+ *                     lock_before_secs:
+ *                       type: integer
+ *                       minimum: 60
+ *                       maximum: 86400
+ *                     scheduled_at:
+ *                       type: string
+ *                       format: date-time
+ *                     venue:
+ *                       type: string
+ *                       maxLength: 100
+ *                     status:
+ *                       type: string
+ *                       enum: [open, locked, cancelled]
+ *     responses:
+ *       200:
+ *         description: Bulk update result with succeeded/failed arrays
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 succeeded:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id: { type: string }
+ *                       updated: { type: array, items: { type: string } }
+ *                 failed:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id: { type: string }
+ *                       reason: { type: string }
+ *       401:
+ *         description: Unauthorized
+ *       422:
+ *         description: Validation error
+ */
+router.post('/markets/bulk-update', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try { await bulkUpdate(req, res); } catch (err) { next(err); }
 });
 
 /**
