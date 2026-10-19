@@ -48,6 +48,15 @@ export function createCorsMiddleware() {
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: [
+      'RateLimit-Limit',
+      'RateLimit-Remaining',
+      'RateLimit-Reset',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'Retry-After',
+    ],
     credentials: true,
     maxAge: 3600, // Preflight cache for 1 hour
   });

@@ -86,9 +86,15 @@ const MAX_SLIPPAGE_BPS: i128 = 3_000;
 // ─── Cross-contract client for oracle whitelist check ─────────────────────────
 #[contractclient(name = "FactoryClient")]
 pub trait FactoryInterface {
+    /// Returns the factory's currently whitelisted oracle addresses.
     fn get_oracles(env: Env) -> Vec<Address>;
+
+    /// Returns an oracle's registered raw Ed25519 public key, if whitelisted.
     fn get_oracle_key(env: Env, oracle: Address) -> Option<BytesN<32>>;
+
+    /// Returns whether the factory is paused.
     fn is_paused(env: Env) -> bool;
+
     /// Returns the registered admin address of the factory.
     fn get_admin(env: Env) -> Address;
 }

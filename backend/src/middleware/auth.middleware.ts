@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import * as authService from '../services/auth.service';
 import { AppError } from '../utils/AppError';
 import { getEnv } from '../config/env';
+import { authenticatedUserRateLimit } from './rate-limit.middleware';
 import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,9 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     r.sessionVersion = sessionVersion;
     // correlationId is already set by attachCorrelationId above
 
+    (req as unknown as Record<string, unknown>).userId = userId;
+    (req as unknown as Record<string, unknown>).sessionVersion = sessionVersion;
+    return authenticatedUserRateLimit(req, _res, next);
     next();
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(401, 'Invalid or expired token'));

@@ -85,6 +85,39 @@ const VALID_WEIGHT_CLASSES = [
   'Minimumweight',
 ] as const;
 
+const listMarketsQuerySchema = z
+  .object({
+    status: z.enum(VALID_STATUSES).optional(),
+    category: z.string().trim().min(1).max(100).optional(),
+    weight_class: z.enum(VALID_WEIGHT_CLASSES).optional(),
+    search: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine((value) => /[\p{L}\p{N}]/u.test(value), 'search must contain a word or number')
+      .optional(),
+    fighter: z.string().min(1).optional(),
+    dateFrom: z.coerce.date().optional(),
+    dateTo: z.coerce.date().optional(),
+    sort: z.enum(['date_asc', 'date_desc', 'pool_desc']).default('date_desc'),
+    page: z.coerce.number().int().min(1, { message: 'page must be an integer ≥ 1' }).default(1),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1, { message: `limit must be between 1 and ${MAX_LIMIT}` })
+      .max(MAX_LIMIT, { message: `limit must be between 1 and ${MAX_LIMIT}` })
+      .default(20),
+  })
+  .refine(({ dateFrom, dateTo }) => !dateFrom || !dateTo || dateFrom <= dateTo, {
+    message: 'dateFrom must be earlier than or equal to dateTo',
+    path: ['dateTo'],
+  })
+  .refine(
+    ({ category, weight_class }) =>
+      !category || !weight_class || category.toLowerCase() === weight_class.toLowerCase(),
+    { message: 'category and weight_class must match when both are provided', path: ['category'] },
+  );
 const listMarketsQuerySchema = z.object({
   status: z
     .enum(VALID_STATUSES)
@@ -110,7 +143,8 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 
 /**
  * GET /api/markets
- * Query params: status, weight_class, page (default 1), limit (default 20)
+ * Query params: search, status, category (weight_class), dateFrom, dateTo,
+ * page (default 1), limit (default 20).
  *
  * Returns paginated market list.
  * Validates query params with Zod before passing to MarketService.
@@ -119,6 +153,9 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 export async function listMarkets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = listMarketsQuerySchema.parse(req.query);
+    const { status, category, weight_class, search, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
+    const { markets, total } = await MarketService.getMarkets(
+      { status, category, weight_class, search, fighter, dateFrom, dateTo, sort },
     const { status, category, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
     const { markets, total } = await MarketService.getMarkets(
       { status, category, weight_class, fighter, dateFrom, dateTo, sort },

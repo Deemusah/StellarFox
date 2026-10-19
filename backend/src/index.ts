@@ -64,6 +64,8 @@ const app = express();
 app.use(createCorsMiddleware());
 
 // Middleware
+app.use(pinoHttp({ logger }));
+app.use(rateLimit({ windowMs: 60_000, max: 10_000, keyBy: "global" }));
 app.use(requestIdMiddleware);
 app.use(pinoHttp({ logger, genReqId: (req) => (req as any).requestId }));
 app.use(express.json());
