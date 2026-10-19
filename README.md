@@ -193,4 +193,13 @@ Automated tests for the provisioning and renewal configuration live in `k8s/cert
 
 ## Development
 
+MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-111 -->
+- #111: Implement Notification Center
+
+<!-- handsoff-issue-112 -->
+- #112: Add Loading States and Skeletons
 See the individual package READMEs for application-level setup instructions.
