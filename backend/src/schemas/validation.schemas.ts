@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { StrKey } from '@stellar/stellar-sdk';
+import { MARKET_CATEGORIES } from '../models/MarketCategory';
 
 // --- Sanitization helper ---
 
@@ -76,7 +77,6 @@ export const logoutBody = z.object({
 // --- Market schemas ---
 
 const MARKET_STATUSES = ['open', 'locked', 'resolved', 'cancelled', 'disputed'] as const;
-const MARKET_CATEGORIES = ['BOXING', 'MMA', 'KICKBOXING', 'OTHER'] as const;
 const MARKET_WEIGHT_CLASSES = [
   'Heavyweight',
   'Light Heavyweight',

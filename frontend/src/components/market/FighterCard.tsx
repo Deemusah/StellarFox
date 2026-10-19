@@ -41,7 +41,16 @@ export function FighterCard({
       {/* Avatar */}
       <div className="relative w-20 h-20 rounded-full overflow-hidden bg-gray-800 flex items-center justify-center shrink-0">
         {photoUrl ? (
-          <Image src={photoUrl} alt={name} fill className="object-cover" sizes="80px" />
+          <Image
+            src={photoUrl}
+            alt={name}
+            fill
+            loading="lazy"
+            placeholder="blur"
+            blurDataURL="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Crect width='10' height='10' fill='%23374151'/%3E%3C/svg%3E"
+            className="object-cover"
+            sizes="80px"
+          />
         ) : (
           <span className="text-3xl select-none">🥊</span>
         )}

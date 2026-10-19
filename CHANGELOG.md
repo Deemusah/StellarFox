@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Monitoring & alerting stack — Prometheus scrape config, 10 alerting rules, 5 recording rules, Alertmanager routing with inhibition, and two provisioned Grafana dashboards under `monitoring/` (#134)
+- `docker-compose.monitoring.yml` overlay that runs Prometheus, Alertmanager and Grafana alongside the app stack (#134)
+- `backend/tests/monitoring/monitoring.test.ts` — verifies the scrape target, alert rules, dashboards and metric registry stay in sync (#134)
 - `Market::get_bet()` — view function returning a bettor's position (#716)
 - `MarketFactory::get_open_market_ids()` — efficient open market filtering (#717)
 - `Market::upgrade()` — admin-only WASM upgrade mechanism (#718)

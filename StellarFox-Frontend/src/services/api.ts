@@ -81,8 +81,19 @@ async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export const MARKET_CATEGORY_FILTERS = [
+  'BOXING',
+  'MMA',
+  'KICKBOXING',
+  'OTHER',
+  'COMBAT_SPORTS',
+] as const;
+
+export type MarketCategoryFilter = (typeof MARKET_CATEGORY_FILTERS)[number];
+
 export interface MarketFilters {
   status?: string;
+  category?: MarketCategoryFilter;
   weight_class?: string;
   search?: string;
   sort?: 'date_asc' | 'date_desc' | 'pool_desc';
@@ -111,6 +122,7 @@ export async function fetchMarkets(
 ): Promise<MarketListResponse> {
   const params = new URLSearchParams();
   if (filters?.status) params.set('status', filters.status);
+  if (filters?.category) params.set('category', filters.category);
   if (filters?.weight_class) params.set('weight_class', filters.weight_class);
   if (filters?.search) params.set('search', filters.search);
   if (filters?.sort) params.set('sort', filters.sort);

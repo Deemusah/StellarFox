@@ -68,6 +68,7 @@ const openMarket: Market = {
   match_id: 'match-1',
   fighter_a: 'Canelo Alvarez',
   fighter_b: 'Gennady Golovkin',
+  category: 'BOXING',
   weight_class: 'Super Middleweight',
   title_fight: true,
   venue: 'T-Mobile Arena',

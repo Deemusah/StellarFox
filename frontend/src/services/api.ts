@@ -81,8 +81,19 @@ async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export const MARKET_CATEGORY_FILTERS = [
+  'BOXING',
+  'MMA',
+  'KICKBOXING',
+  'OTHER',
+  'COMBAT_SPORTS',
+] as const;
+
+export type MarketCategoryFilter = (typeof MARKET_CATEGORY_FILTERS)[number];
+
 export interface MarketFilters {
   status?: string;
+  category?: MarketCategoryFilter;
   weight_class?: string;
   search?: string;
   sort?: 'date_asc' | 'date_desc' | 'pool_desc';
@@ -111,6 +122,7 @@ export async function fetchMarkets(
 ): Promise<MarketListResponse> {
   const params = new URLSearchParams();
   if (filters?.status) params.set('status', filters.status);
+  if (filters?.category) params.set('category', filters.category);
   if (filters?.weight_class) params.set('weight_class', filters.weight_class);
   if (filters?.search) params.set('search', filters.search);
   if (filters?.sort) params.set('sort', filters.sort);
@@ -118,6 +130,34 @@ export async function fetchMarkets(
   if (pagination?.limit) params.set('limit', pagination.limit.toString());
   const qs = params.toString();
   return apiFetch<MarketListResponse>(`/api/markets${qs ? `?${qs}` : ''}`);
+}
+
+export interface MarketSuggestion {
+  /** Fighter name */
+  name: string;
+  /** Market this fighter appears in */
+  market_id: string;
+  /** Which fighter slot: 'a' or 'b' */
+  side: 'a' | 'b';
+}
+
+export interface MarketSuggestionsResponse {
+  suggestions: MarketSuggestion[];
+}
+
+/**
+ * Calls GET /api/markets/search/suggestions?q=<query>&limit=<limit>.
+ * Returns up to `limit` fighter name suggestions matching the query.
+ * Throws NetworkError if the request fails.
+ */
+export async function fetchMarketSuggestions(
+  query: string,
+  limit = 8,
+): Promise<MarketSuggestionsResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return apiFetch<MarketSuggestionsResponse>(
+    `/api/markets/search/suggestions?${params.toString()}`,
+  );
 }
 
 /**

@@ -7,6 +7,7 @@
 // ============================================================
 
 import { pool } from '../config/db';
+import { isMarketCategory } from '../models/MarketCategory';
 import { rpc, Address, xdr } from '@stellar/stellar-sdk';
 import { subscribeToContractEvents, fetchHistoricalEvents } from '../services/StellarService';
 import { cacheDeletePattern } from '../services/cache.service';
@@ -491,6 +492,7 @@ export async function handleMarketCreated(event: RawStellarEvent): Promise<void>
       match_id: p.match_id ?? '',
       fighter_a: p.fighter_a ?? '',
       fighter_b: p.fighter_b ?? '',
+      category: isMarketCategory(p.category) ? p.category : 'OTHER',
       weight_class: p.weight_class ?? '',
       title_fight: p.title_fight ?? false,
       venue: p.venue ?? '',
@@ -503,9 +505,9 @@ export async function handleMarketCreated(event: RawStellarEvent): Promise<void>
 
     await pool.query(
       `INSERT INTO markets
-         (market_id, contract_address, match_id, fighter_a, fighter_b,
+         (market_id, contract_address, match_id, fighter_a, fighter_b, category,
           weight_class, title_fight, venue, scheduled_at, fee_bps, lock_before_secs, status, ledger_sequence)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT (market_id) DO NOTHING`,
       [
         marketData.market_id,
@@ -513,6 +515,7 @@ export async function handleMarketCreated(event: RawStellarEvent): Promise<void>
         marketData.match_id,
         marketData.fighter_a,
         marketData.fighter_b,
+        marketData.category,
         marketData.weight_class,
         marketData.title_fight,
         marketData.venue,

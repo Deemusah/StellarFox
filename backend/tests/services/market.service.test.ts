@@ -27,6 +27,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
     match_id: 'fight-1',
     fighter_a: 'Ali',
     fighter_b: 'Frazier',
+    category: 'BOXING',
     weight_class: 'heavyweight',
     title_fight: false,
     venue: 'MSG',
@@ -49,7 +50,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
 }
 
 const MARKET_OPEN = makeMarket({ market_id: 'mkt-1', status: 'open' });
-const MARKET_RESOLVED = makeMarket({ market_id: 'mkt-2', status: 'resolved' });
+const MARKET_RESOLVED = makeMarket({ market_id: 'mkt-2', status: 'resolved', category: 'MMA' });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 describe('MarketService', () => {
@@ -83,6 +84,22 @@ describe('MarketService', () => {
     const result = await getMarkets({ status: 'open' });
     expect(result.total).toBe(1);
     expect(result.markets[0].status).toBe('open');
+  });
+
+  it('getMarkets() filters by a leaf category', async () => {
+    const result = await getMarkets({ category: 'MMA' });
+
+    expect(result.total).toBe(1);
+    expect(result.markets[0].category).toBe('MMA');
+  });
+
+  it('getMarkets() includes all descendant categories for a parent category', async () => {
+    const result = await getMarkets({ category: 'COMBAT_SPORTS' });
+
+    expect(result.total).toBe(2);
+    expect(result.markets.map((market) => market.category)).toEqual(
+      expect.arrayContaining(['BOXING', 'MMA']),
+    );
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
