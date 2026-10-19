@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/AppError';
 import { flagDispute, investigateDispute, cancelMarket, resolveDispute, listDisputes, processRefunds, bulkPause, bulkCancel, bulkUpdate } from '../api/controllers/AdminController';
+import { flagDispute, investigateDispute, cancelMarket, resolveDispute, listDisputes, processRefunds, bulkPause, bulkCancel, deleteMarket } from '../api/controllers/AdminController';
 import {
   logExportAudit,
   streamUsersExport,
@@ -13,6 +14,30 @@ import { flushOracleWhitelistCache } from '../oracle/OracleService';
 import { requireAdmin } from '../middleware/requireAdminJwt.middleware';
 
 const router = Router();
+
+/**
+ * @swagger
+ * /api/admin/markets/{market_id}:
+ *   delete:
+ *     summary: Soft-delete a market while preserving its history (admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: market_id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Market hidden from public API
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Market not found
+ */
+router.delete('/markets/:market_id', requireAdmin, deleteMarket);
 
 /**
  * @swagger

@@ -10,9 +10,17 @@ import * as StellarService from '../../services/StellarService';
 import * as BetService from '../../services/BetService';
 import * as OracleService from '../../oracle/OracleService';
 import { db, bulkPauseMarkets, bulkCancelMarkets, updateMarketStatus, bulkUpdateMarkets, type BulkUpdateItem } from '../../services/MarketService';
+import { db, bulkPauseMarkets, bulkCancelMarkets, updateMarketStatus, softDeleteMarket } from '../../services/MarketService';
 import { pool } from '../../config/db';
 
 const MAX_BULK = 50;
+
+export async function deleteMarket(req: Request, res: Response): Promise<void> {
+  const deletedBy = (req as Request & { userId?: string }).userId;
+  if (!deletedBy) throw new AppError(401, 'Unauthorized');
+  await softDeleteMarket(req.params.market_id, deletedBy);
+  res.status(200).json({ success: true, message: 'Market deleted' });
+}
 
 export async function bulkPause(req: Request, res: Response): Promise<void> {
   const { marketIds } = req.body as { marketIds: string[] };

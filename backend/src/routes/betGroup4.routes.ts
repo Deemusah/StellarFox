@@ -16,6 +16,7 @@ import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
@@ -108,12 +109,13 @@ router.post(
       }
 
       const txHash = idempotency_key ? `tx_${idempotency_key}` : `tx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
       const betInsertRes = await client.query(
         `INSERT INTO bets (
           market_id, bettor_address, side, amount, amount_xlm,
-          tx_hash, ledger_sequence, placed_at, claimed
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), false)
+          expires_at, tx_hash, ledger_sequence, placed_at, claimed
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), false)
         RETURNING *`,
         [
           market_id,
@@ -121,6 +123,7 @@ router.post(
           side,
           amount,
           Number(amount) / 10_000_000,
+          expiresAt,
           txHash,
           1000,
         ]
@@ -241,12 +244,7 @@ router.get(
         success: true,
         data: {
           bets: betsRes.rows,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit) || 1,
-          },
+          meta: buildPaginationMeta(total, page, limit),
         },
       });
     } catch (err) {

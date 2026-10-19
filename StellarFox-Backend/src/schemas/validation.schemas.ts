@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { StrKey } from '@stellar/stellar-sdk';
+import { MARKET_CATEGORIES } from '../models/MarketCategory';
 
 // --- Sanitization helper ---
 
@@ -76,7 +77,6 @@ export const logoutBody = z.object({
 // --- Market schemas ---
 
 const MARKET_STATUSES = ['open', 'locked', 'resolved', 'cancelled', 'disputed'] as const;
-const MARKET_CATEGORIES = ['BOXING', 'MMA', 'KICKBOXING', 'OTHER'] as const;
 const MARKET_WEIGHT_CLASSES = [
   'Heavyweight',
   'Light Heavyweight',
@@ -227,3 +227,57 @@ export const updateProfileBody = z
   .refine((data) => data.username !== undefined || data.avatarUrl !== undefined, {
     message: 'At least one field (username or avatarUrl) must be provided',
   });
+
+// --- Feedback schemas ---
+
+export const submitFeedbackBody = z.object({
+  category: z.enum(['general', 'feature_request', 'ux', 'performance', 'other']),
+  rating: z.number().int().min(1).max(5).optional(),
+  message: sanitizedString(5, 2000),
+  pageUrl: z.string().url().optional().or(z.literal('')),
+});
+
+// --- Bug Report schemas ---
+
+export const submitBugReportBody = z.object({
+  title: sanitizedString(5, 200),
+  description: sanitizedString(10, 5000),
+  severity: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+  category: z.enum(['ui', 'transaction', 'wallet', 'market', 'general']).default('general'),
+  stepsToReproduce: sanitizedString(5, 5000).optional(),
+  expectedBehavior: sanitizedString(5, 2000).optional(),
+  actualBehavior: sanitizedString(5, 2000).optional(),
+  pageUrl: z.string().url().optional().or(z.literal('')),
+  browserInfo: z.record(z.unknown()).optional(),
+});
+
+// --- Feedback schema ---
+
+export const submitFeedbackBody = z.object({
+  category: z.enum(['general', 'feature_request', 'ux', 'performance', 'other'], {
+    errorMap: () => ({
+      message: 'category must be one of: general, feature_request, ux, performance, other',
+    }),
+  }),
+  rating: z.number().int().min(1).max(5).optional(),
+  message: sanitizedString(5, 2000),
+  pageUrl: z.string().url('pageUrl must be a valid URL').optional().or(z.literal('')),
+});
+
+// --- Bug report schema ---
+
+export const submitBugReportBody = z.object({
+  title: sanitizedString(5, 200),
+  description: sanitizedString(10, 5000),
+  severity: z.enum(['low', 'medium', 'high', 'critical'], {
+    errorMap: () => ({ message: 'severity must be one of: low, medium, high, critical' }),
+  }).default('medium'),
+  category: z.enum(['ui', 'transaction', 'wallet', 'market', 'general'], {
+    errorMap: () => ({ message: 'category must be one of: ui, transaction, wallet, market, general' }),
+  }).default('general'),
+  stepsToReproduce: sanitizedString(5, 5000).optional(),
+  expectedBehavior: sanitizedString(5, 2000).optional(),
+  actualBehavior: sanitizedString(5, 2000).optional(),
+  pageUrl: z.string().url('pageUrl must be a valid URL').optional().or(z.literal('')),
+  browserInfo: z.record(z.unknown()).optional(),
+});

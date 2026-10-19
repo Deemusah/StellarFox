@@ -148,3 +148,119 @@ export interface UserNotification {
   read: boolean;
   created_at: string;
 }
+
+// ─── Feedback ────────────────────────────────────────────────────────────────
+
+export type FeedbackCategory = 'general' | 'feature_request' | 'ux' | 'performance' | 'other';
+
+export interface FeedbackInput {
+  category: FeedbackCategory;
+  rating?: number;
+  message: string;
+  pageUrl?: string;
+}
+
+// ─── Bug Reports ─────────────────────────────────────────────────────────────
+
+export type BugSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type BugCategory = 'ui' | 'transaction' | 'wallet' | 'market' | 'general';
+
+export interface BugReportInput {
+  title: string;
+  description: string;
+  severity?: BugSeverity;
+  category?: BugCategory;
+  stepsToReproduce?: string;
+  expectedBehavior?: string;
+  actualBehavior?: string;
+  pageUrl?: string;
+  browserInfo?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist
+// ---------------------------------------------------------------------------
+
+export interface WatchlistMarket {
+  id: string;
+  title: string;
+  status: string;
+  fighter_a: string;
+  fighter_b: string;
+  closing_at: string;
+  watchlisted_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Retention Config (Admin)
+// ---------------------------------------------------------------------------
+
+export interface RetentionConfig {
+  id: number;
+  data_type: string;
+  retention_days: number;
+  enabled: boolean;
+  description: string | null;
+  updated_by: string | null;
+  updated_at: string;
+  created_at: string;
+}
+
+// ─── Feedback ────────────────────────────────────────────────────────────────
+
+export type FeedbackCategory =
+  | 'general'
+  | 'feature_request'
+  | 'ux'
+  | 'performance'
+  | 'other';
+
+export interface FeedbackInput {
+  category: FeedbackCategory;
+  /** Optional 1–5 star rating */
+  rating?: number;
+  message: string;
+  pageUrl?: string;
+}
+
+// ─── Bug Reports ─────────────────────────────────────────────────────────────
+
+export type BugSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type BugCategory = 'ui' | 'transaction' | 'wallet' | 'market' | 'general';
+
+export interface BugReportInput {
+  title: string;
+  description: string;
+  severity?: BugSeverity;
+  category?: BugCategory;
+  stepsToReproduce?: string;
+  expectedBehavior?: string;
+  actualBehavior?: string;
+  pageUrl?: string;
+  browserInfo?: Record<string, unknown>;
+}
+
+// ─── Watchlist ───────────────────────────────────────────────────────────────
+
+export interface WatchlistMarket {
+  id: string;
+  title: string;
+  status: string;
+  fighter_a: string;
+  fighter_b: string;
+  closing_at: string;
+  watchlisted_at: string;
+}
+
+// ─── Retention Config ─────────────────────────────────────────────────────────
+
+export interface RetentionConfig {
+  id: number;
+  data_type: string;
+  retention_days: number;
+  enabled: boolean;
+  description: string | null;
+  updated_by: string | null;
+  updated_at: string;
+  created_at: string;
+}

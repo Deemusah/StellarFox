@@ -1,0 +1,40 @@
+# ============================================================
+# BANKERCHANGER — recording rules
+# ============================================================
+#
+# Pre-aggregating the expensive expressions keeps the Grafana dashboards
+# cheap to render and gives the alerting rules a stable, low-cardinality
+# series to evaluate.
+#
+# Naming convention: <aggregation level>:<metric>:<operations>
+#   e.g. job:http_requests:rate5m
+# ============================================================
+
+groups:
+  - name: bankerchanger-recording
+    interval: 30s
+    rules:
+      # Overall request throughput, per route.
+      - record: job:http_requests:rate5m
+        expr: sum by (job, route) (rate(http_requests_total[5m]))
+
+      # 5xx throughput, per route — pairs with the error-rate alert.
+      - record: job:http_requests:error_rate5m
+        expr: sum by (job, route) (rate(http_requests_total{status_code=~"5.."}[5m]))
+
+      # p95 end-to-end HTTP latency.
+      - record: job:http_request_duration_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket[5m])))
+
+      # p95 database latency across every operation.
+      - record: job:db_query_duration_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (job, le) (rate(db_query_duration_seconds_bucket[5m])))
+
+      # Cache hit ratio in the 0..1 range.
+      - record: job:cache_hit_rate:ratio5m
+        expr: |
+          sum(rate(cache_hits_total[5m]))
+            / clamp_min(
+                sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])),
+                0.001
+              )

@@ -42,6 +42,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
     match_id: 'fight-1',
     fighter_a: 'Ali',
     fighter_b: 'Frazier',
+    category: 'BOXING',
     weight_class: 'heavyweight',
     title_fight: false,
     venue: 'MSG',

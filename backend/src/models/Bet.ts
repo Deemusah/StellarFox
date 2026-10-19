@@ -14,6 +14,7 @@ export interface Bet {
   /** Denormalized XLM amount for display queries */
   amount_xlm: number;
   placed_at: Date;
+  expires_at: Date | null;
   claimed: boolean;
   claimed_at: Date | null;
   /** Actual payout received, null until claimed */

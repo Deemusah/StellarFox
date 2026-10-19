@@ -9,8 +9,57 @@ import { StrKey } from '@stellar/stellar-sdk';
 import { AppError } from '../../utils/AppError';
 import { ERROR_CODES } from '../../constants/errorCodes';
 import { validateQuery } from '../middleware/validate';
+import { buildPaginationMeta, applyOffsetPagination } from '../../utils/pagination';
 import * as MarketService from '../../services/MarketService';
 import * as OracleService from '../../oracle/OracleService';
+import { MARKET_CATEGORY_FILTERS } from '../../models/MarketCategory';
+
+// ---------------------------------------------------------------------------
+// Autocomplete — GET /api/markets/search/suggestions
+// ---------------------------------------------------------------------------
+
+const suggestionsQuerySchema = z.object({
+  q: z.string().min(1, { message: 'q must be at least 1 character' }).max(100),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(8),
+});
+
+/**
+ * GET /api/markets/search/suggestions?q=<query>&limit=<limit>
+ *
+ * Returns up to `limit` distinct fighter names that ILIKE-match the query.
+ * Each entry includes the market_id and which fighter slot ('a' or 'b').
+ *
+ * Responds 200 with { suggestions: [{ name, market_id, side }] }.
+ * Responds 400 on invalid params.
+ */
+export async function searchSuggestions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = suggestionsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const errors = parsed.error.issues.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      res.status(400).json({ errors });
+      return;
+    }
+
+    const { q, limit } = parsed.data;
+    const suggestions = await MarketService.getFighterSuggestions(q, limit);
+    res.status(200).json({ suggestions });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Issue #18 — listMarkets
@@ -37,6 +86,39 @@ const VALID_WEIGHT_CLASSES = [
   'Minimumweight',
 ] as const;
 
+const listMarketsQuerySchema = z
+  .object({
+    status: z.enum(VALID_STATUSES).optional(),
+    category: z.string().trim().min(1).max(100).optional(),
+    weight_class: z.enum(VALID_WEIGHT_CLASSES).optional(),
+    search: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine((value) => /[\p{L}\p{N}]/u.test(value), 'search must contain a word or number')
+      .optional(),
+    fighter: z.string().min(1).optional(),
+    dateFrom: z.coerce.date().optional(),
+    dateTo: z.coerce.date().optional(),
+    sort: z.enum(['date_asc', 'date_desc', 'pool_desc']).default('date_desc'),
+    page: z.coerce.number().int().min(1, { message: 'page must be an integer ≥ 1' }).default(1),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1, { message: `limit must be between 1 and ${MAX_LIMIT}` })
+      .max(MAX_LIMIT, { message: `limit must be between 1 and ${MAX_LIMIT}` })
+      .default(20),
+  })
+  .refine(({ dateFrom, dateTo }) => !dateFrom || !dateTo || dateFrom <= dateTo, {
+    message: 'dateFrom must be earlier than or equal to dateTo',
+    path: ['dateTo'],
+  })
+  .refine(
+    ({ category, weight_class }) =>
+      !category || !weight_class || category.toLowerCase() === weight_class.toLowerCase(),
+    { message: 'category and weight_class must match when both are provided', path: ['category'] },
+  );
 const listMarketsQuerySchema = z.object({
   status: z
     .enum(VALID_STATUSES)
@@ -44,6 +126,7 @@ const listMarketsQuerySchema = z.object({
   weight_class: z
     .enum(VALID_WEIGHT_CLASSES)
     .optional(),
+  category: z.enum(MARKET_CATEGORY_FILTERS).optional(),
   fighter: z.string().min(1).optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
@@ -61,7 +144,8 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 
 /**
  * GET /api/markets
- * Query params: status, weight_class, page (default 1), limit (default 20)
+ * Query params: search, status, category (weight_class), dateFrom, dateTo,
+ * page (default 1), limit (default 20).
  *
  * Returns paginated market list.
  * Validates query params with Zod before passing to MarketService.
@@ -70,12 +154,18 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 export async function listMarkets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = listMarketsQuerySchema.parse(req.query);
-    const { status, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
+    const { status, category, weight_class, search, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
     const { markets, total } = await MarketService.getMarkets(
-      { status, weight_class, fighter, dateFrom, dateTo, sort },
+      { status, category, weight_class, search, fighter, dateFrom, dateTo, sort },
+    const { status, category, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
+    const { markets, total } = await MarketService.getMarkets(
+      { status, category, weight_class, fighter, dateFrom, dateTo, sort },
       { page, limit },
     );
-    res.status(200).json({ markets, total, page, limit });
+    res.status(200).json({
+      markets,
+      meta: buildPaginationMeta(total, page, limit),
+    });
   } catch (err) {
     next(err);
   }
@@ -117,30 +207,43 @@ const marketBetsQuerySchema = z.object({
       message: 'Invalid Stellar address format',
     })
     .optional(),
+  page: z.coerce.number().int().min(1, { message: 'page must be an integer ≥ 1' }).default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1, { message: 'limit must be between 1 and 100' })
+    .max(100, { message: 'limit must be between 1 and 100' })
+    .default(20),
 });
 
 /**
  * GET /api/markets/:market_id/bets
- * Query params: address (optional — filter to one bettor)
+ * Query params: address (optional — filter to one bettor), page, limit
  *
- * Returns all bets for a market.
- * Responds 404 if market not found, 200 with Bet[].
+ * Returns paginated bets for a market.
+ * Responds 404 if market not found, 200 with { bets, meta: { page, limit, total, totalPages } }.
  */
 export const getMarketBetsValidation = validateQuery(marketBetsQuerySchema);
 
 export async function getMarketBets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { market_id } = req.params;
-    const { address } = req.query;
+    const { address, page, limit } = req.query as unknown as {
+      address?: string;
+      page: number;
+      limit: number;
+    };
 
     if (address !== undefined) {
       if (typeof address !== 'string' || !StrKey.isValidEd25519PublicKey(address)) {
-        throw AppError.badRequest('Invalid Stellar address format');
+        throw AppError.badRequest('Invalid Stellar address format', ERROR_CODES.INVALID_REQUEST);
       }
     }
 
-    const bets = await MarketService.getBetsByMarket(market_id, address as string | undefined);
-    res.json(bets);
+    const allBets = await MarketService.getBetsByMarket(market_id, address);
+    const { data: bets, meta } = applyOffsetPagination(allBets, page, limit);
+
+    res.json({ bets, meta });
   } catch (err) {
     next(err);
   }
@@ -157,6 +260,54 @@ export async function getMarketStats(req: Request, res: Response, next: NextFunc
     const { market_id } = req.params;
     const stats = await MarketService.getMarketStats(market_id);
     res.status(200).json(stats);
+  } catch (err) {
+    next(err);
+  }
+}
+
+const probabilityHistoryQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+}).refine(({ from, to }) => !from || !to || from <= to, {
+  message: 'from must be before or equal to to',
+});
+
+/**
+ * GET /api/markets/:market_id/probabilities
+ *
+ * Returns sampled implied probabilities in chronological order.
+ */
+export async function getMarketProbabilityHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const marketIdParam = req.params.market_id;
+    const marketId = Array.isArray(marketIdParam) ? marketIdParam[0] : marketIdParam;
+    if (!marketId) throw AppError.badRequest('market_id is required');
+    const filters = probabilityHistoryQuerySchema.parse(req.query);
+    const snapshots = await MarketService.getProbabilityHistory(marketId, filters);
+    res.status(200).json({ market_id: marketId, snapshots });
+export async function getMarketAnalytics(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const analytics = await MarketService.getMarketAnalytics();
+    res.status(200).json(analytics);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getMarketRecommendations(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const userId = (req as Request & { userId?: string }).userId;
+    if (!userId) throw new AppError(401, 'Authentication required');
+
+    const limitSchema = z.coerce.number().int().min(1).max(50).default(10);
+    const limit = limitSchema.parse(req.query.limit);
+    const recommendations = await MarketService.getRecommendedMarkets(userId, limit);
+    res.status(200).json(recommendations);
   } catch (err) {
     next(err);
   }
@@ -182,8 +333,14 @@ export async function getMarketOdds(
     const outcome = req.query.outcome as string | undefined;
 
     if (outcome && !MARKET_ODDS_OUTCOMES.includes(outcome as typeof MARKET_ODDS_OUTCOMES[number])) {
-      res.status(400).json({ error: `Invalid outcome. Must be one of: ${MARKET_ODDS_OUTCOMES.join(', ')}` });
-      return;
+      return next(
+        new AppError(
+          400,
+          `Invalid outcome. Must be one of: ${MARKET_ODDS_OUTCOMES.join(', ')}`,
+          ERROR_CODES.INVALID_REQUEST,
+          { field: 'outcome', received: outcome },
+        ),
+      );
     }
 
     if (outcome) {
@@ -308,11 +465,13 @@ export async function getPortfolio(req: Request, res: Response, next: NextFuncti
     const parseResult = portfolioAddressSchema.safeParse({ address: req.params.address });
     if (!parseResult.success) {
       const errors = parseResult.error.issues.map((e) => ({
-        field: e.path.join('.'),
+        field: e.path.join('.') || '(root)',
         message: e.message,
+        code: e.code,
       }));
-      res.status(400).json({ errors });
-      return;
+      return next(
+        new AppError(400, 'Invalid address format', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { address } = parseResult.data;
@@ -386,9 +545,14 @@ export async function resolveMarket(req: Request, res: Response, next: NextFunct
 
     const parsed = resolveMarketBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      const errors = parsed.error.issues.map((e) => ({ field: e.path.join('.'), message: e.message }));
-      res.status(400).json({ errors });
-      return;
+      const errors = parsed.error.issues.map((e) => ({
+        field: e.path.join('.') || '(root)',
+        message: e.message,
+        code: e.code,
+      }));
+      return next(
+        new AppError(422, 'Validation failed', ERROR_CODES.INVALID_REQUEST, errors),
+      );
     }
 
     const { winning_outcome } = parsed.data;
@@ -400,8 +564,9 @@ export async function resolveMarket(req: Request, res: Response, next: NextFunct
     );
 
     if (market.status === 'resolved') {
-      res.status(409).json({ error: 'Market is already resolved' });
-      return;
+      return next(
+        new AppError(409, 'Market is already resolved', ERROR_CODES.MARKET_RESOLVED),
+      );
     }
 
     await OracleService.submitFightResult(market.match_id, winning_outcome);

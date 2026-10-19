@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import pinoHttp from "pino-http";
 import { validateEnv } from "./config/env";
 // Validate environment variables first before importing anything else that uses them!
@@ -12,24 +13,45 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
+import { httpMetrics, slowRequestLogger, requestTimeout } from "./middleware/performance.middleware";
+import { requestIdMiddleware } from "./middleware/requestId.middleware";
 import { AppError } from "./utils/AppError";
 import { logger } from "./utils/logger";
 import { pool } from "./config/db";
 import { redis } from "./config/redis";
 import authRouter from "./routes/auth.routes";
 import marketRouter from "./routes/market.routes";
+import marketGroup3Router from "./routes/marketGroup3.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
+import batchRouter from "./routes/batch.routes";
+import systemHealthRouter from "./routes/systemHealth.routes";
+import disputesRouter from "./routes/disputes.routes";
+import userActivityRouter from "./routes/userActivity.routes";
 
 import engagementRouter from "./routes/engagement.routes";
+import feedbackRouter from "./routes/feedback.routes";
+import bugReportsRouter from "./routes/bugReports.routes";
+import watchlistRouter from "./routes/watchlist.routes";
+import retentionConfigRouter from "./routes/retentionConfig.routes";
+import feedbackRouter from "./routes/feedback.routes";
+import bugReportsRouter from "./routes/bugReports.routes";
+import watchlistRouter from "./routes/watchlist.routes";
+import retentionConfigRouter from "./routes/retentionConfig.routes";
+import profileRouter from "./routes/profile.routes";
+import notificationPrefsRouter from "./routes/notificationPrefs.routes";
+import referralsRouter from "./routes/referrals.routes";
+import leaderboardRouter from "./routes/leaderboard.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
-import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
+import { initActivityFeed, getActivityFeed, tryGetActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
-import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
+import { register } from "./services/metrics.service";
+import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
 import { installQueryMonitor } from "./middleware/query-monitoring";
@@ -48,11 +70,23 @@ const app = express();
 
 // CORS configuration - must be before other middleware
 app.use(createCorsMiddleware());
+app.use(compression());
 
 // Middleware
 app.use(pinoHttp({ logger }));
+app.use(rateLimit({ windowMs: 60_000, max: 10_000, keyBy: "global" }));
+app.use(requestIdMiddleware);
+app.use(pinoHttp({ logger, genReqId: (req) => (req as any).requestId }));
 app.use(express.json());
 app.use(requestLogging);
+
+// Performance monitoring — mount early so timers capture full handler duration.
+// httpMetrics:       Prometheus histogram + counter per route/method/status.
+// slowRequestLogger: Warns + increments slow-request counter when over threshold.
+// requestTimeout:    Returns 503 if a handler stalls beyond 30 s.
+app.use(httpMetrics);
+app.use(slowRequestLogger);
+app.use(requestTimeout(30_000));
 
 // Setup Swagger/OpenAPI documentation
 if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
@@ -60,21 +94,21 @@ if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
 }
 
 // Prometheus metrics endpoint (internal only — no auth required)
+app.get("/metrics/export", async (req, res) => {
+  const format = String(req.query.format ?? "json").toLowerCase();
+  if (format !== "json" && format !== "csv") {
+    return res.status(400).json({ error: "format must be json or csv" });
+  }
+
+  const body = await exportMetrics(format);
+  res.set("Content-Type", format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="metrics.${format}"`);
+  res.send(body);
+});
+
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
-});
-
-// HTTP request metrics middleware
-app.use((req, res, next) => {
-  const end = httpRequestDuration.startTimer();
-  res.on("finish", () => {
-    const route = req.route?.path || req.path;
-    const labels = { method: req.method, route, status_code: String(res.statusCode) };
-    end(labels);
-    httpRequestsTotal.inc(labels);
-  });
-  next();
 });
 
 // Routes
@@ -82,6 +116,15 @@ app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     await redis.ping();
+
+    const feed = tryGetActivityFeed();
+    const wsMetrics = feed
+      ? {
+          connectedClients: feed.getConnectedClientCount(),
+          subscriptionRooms: feed.getSubscriptionRoomCount(),
+        }
+      : null;
+
     res.json({
       status: "ok",
       db: "connected",
@@ -93,6 +136,7 @@ app.get("/health", async (_req, res) => {
         waitingCount: pool.waitingCount,
       },
       circuitBreakers: getCircuitBreakerStatus(),
+      ...(wsMetrics !== null && { websocket: wsMetrics }),
     });
   } catch {
     res.status(503).json({ status: "error" });
@@ -104,6 +148,8 @@ app.use("/auth", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" }));
 app.use("/api", rateLimit({ windowMs: 60_000, max: 60, keyBy: "ip" })); // Public endpoints
 app.use("/api/oracle", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" })); // Oracle endpoint stricter
 app.use("/api/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" })); // Admin endpoints
+app.use("/api/v1/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" }));
+app.use("/api/batch", rateLimit({ windowMs: 60_000, max: 30, keyBy: "userId" })); // Batch endpoints
 app.use("/trading", rateLimit({ windowMs: 60_000, max: 60, keyBy: "userId" }));
 app.use(
   "/wallet/withdraw",
@@ -112,14 +158,50 @@ app.use(
 
 app.use("/auth", authRouter);
 app.use("/api/markets", marketRouter);
+app.use("/api/v2/markets", marketGroup3Router);
 app.use("/api/governance", governanceRouter);
 app.use("/api/engagement", engagementRouter);
+app.use("/api/feedback", feedbackRouter);
+app.use("/api/bug-reports", bugReportsRouter);
+app.use("/api/watchlist", watchlistRouter);
+app.use("/api/admin/retention", retentionConfigRouter);
+app.use("/api/feedback", feedbackRouter);
+app.use("/api/bug-reports", bugReportsRouter);
+app.use("/api/watchlist", watchlistRouter);
+app.use("/api/admin/retention", retentionConfigRouter);
+app.use("/api/referrals", referralsRouter);
+app.use("/api/leaderboard", leaderboardRouter);
 app.use("/api/claims", claimsRouter);
 app.use("/api/bets", claimsRouter);
 app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/users", usersRouter);
+app.use("/api/users", profileRouter);
+app.use("/api/users", notificationPrefsRouter);
+app.use("/api/disputes", disputesRouter);
+app.use("/api/v1/user-activity", userActivityRouter);
 app.use("/api/admin", adminRouter);
+
+// Versioned API routes. The unversioned routes above remain available for
+// existing clients and retain their current response contracts.
+const apiV1Router = express.Router();
+apiV1Router.use((_req, res, next) => {
+  res.setHeader("X-API-Version", "1");
+  next();
+});
+apiV1Router.use("/markets", marketRouter);
+apiV1Router.use("/governance", governanceRouter);
+apiV1Router.use("/engagement", engagementRouter);
+apiV1Router.use("/claims", claimsRouter);
+apiV1Router.use("/bets", claimsRouter);
+apiV1Router.get("/stats", getPlatformStats);
+apiV1Router.get("/portfolio/:address", getPortfolio);
+apiV1Router.use("/users", usersRouter);
+apiV1Router.use("/admin", adminRouter);
+app.use("/api/v1", apiV1Router);
+
+app.use("/api/batch", batchRouter);
+app.use("/api/v1/health", systemHealthRouter);
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));
 
@@ -165,6 +247,7 @@ const server = app.listen(PORT, () => {
   }
   startAutoResolutionCron();
   startAutoLockCron();
+  startProbabilitySnapshotCron();
   startCleanupCron();
 });
 

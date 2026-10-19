@@ -4,12 +4,53 @@
 // Contributors: implement every function marked TODO.
 // ============================================================
 
+import type { Market, MarketStats, PlatformStats, ProbabilitySnapshot } from '../models/Market';
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
+import { getMarketCategoryDescendants, type MarketCategoryFilter } from '../models/MarketCategory';
 import type { Bet } from '../models/Bet';
 import { pool } from '../config/db';
 import * as cache from './cache.service';
 import * as StellarService from './StellarService';
 import { AppError } from '../utils/AppError';
+
+function buildMarketWhere(filters?: MarketFilters): { whereSql: string; values: unknown[] } {
+  const whereClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (filters?.status) {
+    values.push(filters.status);
+    whereClauses.push(`status = $${values.length}`);
+  }
+  const category = filters?.category ?? filters?.weight_class;
+  if (category) {
+    values.push(category);
+    whereClauses.push(`LOWER(weight_class) = LOWER($${values.length})`);
+  }
+  if (filters?.search?.trim()) {
+    values.push(filters.search.trim());
+    whereClauses.push(
+      `to_tsvector('simple', concat_ws(' ', fighter_a, fighter_b, weight_class, venue)) ` +
+      `@@ plainto_tsquery('simple', $${values.length})`,
+    );
+  }
+  if (filters?.fighter) {
+    values.push(`%${filters.fighter}%`);
+    whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
+  }
+  if (filters?.dateFrom) {
+    values.push(filters.dateFrom);
+    whereClauses.push(`scheduled_at >= $${values.length}`);
+  }
+  if (filters?.dateTo) {
+    values.push(filters.dateTo);
+    whereClauses.push(`scheduled_at <= $${values.length}`);
+  }
+
+  return {
+    whereSql: whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '',
+    values,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // DB adapter — thin abstraction so tests can inject a mock
@@ -47,10 +88,12 @@ export interface DbAdapter {
   findBetsByAddress(bettor_address: string): Promise<Bet[]>;
   findBetsByMarket(market_id: string, bettor_address?: string): Promise<Bet[]>;
   updateMarketStatus(market_id: string, status: string): Promise<void>;
+  softDeleteMarket?(market_id: string, deleted_by: string): Promise<boolean>;
 }
 
 export const defaultDbAdapter: DbAdapter = {
   async findMarkets(filters?: MarketFilters): Promise<Market[]> {
+    const { whereSql, values } = buildMarketWhere(filters);
     const whereClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -61,6 +104,10 @@ export const defaultDbAdapter: DbAdapter = {
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
@@ -75,7 +122,8 @@ export const defaultDbAdapter: DbAdapter = {
       whereClauses.push(`scheduled_at <= $${values.length}`);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    whereClauses.unshift('deleted_at IS NULL');
+    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
     const orderBySql =
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -97,7 +145,7 @@ export const defaultDbAdapter: DbAdapter = {
 
   async findMarketById(market_id: string): Promise<Market | null> {
     const { rows } = await pool.query(
-      'SELECT * FROM markets WHERE market_id = $1',
+      'SELECT * FROM markets WHERE market_id = $1 AND deleted_at IS NULL',
       [market_id],
     );
     if (rows.length === 0) return null;
@@ -125,14 +173,16 @@ export const defaultDbAdapter: DbAdapter = {
 
   async findBetsByMarket(market_id: string, bettor_address?: string): Promise<Bet[]> {
     const values: unknown[] = [market_id];
-    let sql = 'SELECT * FROM bets WHERE market_id = $1';
+    let sql = `SELECT b.* FROM bets b
+               JOIN markets m ON m.market_id = b.market_id
+               WHERE b.market_id = $1 AND m.deleted_at IS NULL`;
 
     if (bettor_address) {
       values.push(bettor_address);
-      sql += ` AND bettor_address = $${values.length}`;
+      sql += ` AND b.bettor_address = $${values.length}`;
     }
 
-    sql += ' ORDER BY placed_at DESC';
+    sql += ' ORDER BY b.placed_at DESC';
 
     const { rows } = await pool.query(sql, values);
     return rows.map((row) => ({
@@ -147,6 +197,14 @@ export const defaultDbAdapter: DbAdapter = {
       'UPDATE markets SET status = $1, updated_at = NOW() WHERE market_id = $2',
       [status, market_id],
     );
+  },
+
+  async softDeleteMarket(market_id: string, deleted_by: string): Promise<boolean> {
+    const result = await pool.query(
+      'UPDATE markets SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW() WHERE market_id = $1 AND deleted_at IS NULL',
+      [market_id, deleted_by],
+    );
+    return (result.rowCount ?? 0) > 0;
   },
 };
 
@@ -175,9 +233,21 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
   await invalidateMarketCache(market_id);
 }
 
+export async function softDeleteMarket(market_id: string, deleted_by = 'system'): Promise<void> {
+  const adapter = db();
+  if (!adapter.softDeleteMarket) throw new AppError(501, 'Market deletion is not supported');
+  const deleted = await adapter.softDeleteMarket(market_id, deleted_by);
+  if (!deleted) throw AppError.notFound(`Market not found: ${market_id}`);
+  await invalidateMarketCache(market_id);
+  await cache.del('platform:stats');
+}
+
 export interface MarketFilters {
   status?: string;
+  category?: string;
+  category?: MarketCategoryFilter;
   weight_class?: string;
+  search?: string;
   fighter?: string;
   dateFrom?: Date;
   dateTo?: Date;
@@ -244,11 +314,112 @@ export interface ProjectedPayout {
   formatted_xlm: number;
 }
 
+export interface ProbabilityHistoryFilters {
+  from?: Date;
+  to?: Date;
+  limit: number;
+}
+
+function mapProbabilitySnapshot(row: Record<string, unknown>): ProbabilitySnapshot {
+  return {
+    market_id: String(row.market_id),
+    sampled_at: new Date(row.sampled_at as string | number | Date),
+    source: row.source as ProbabilitySnapshot['source'],
+    probability_a: Number(row.probability_a),
+    probability_b: Number(row.probability_b),
+    probability_draw: Number(row.probability_draw),
+    pool_a: String(row.pool_a),
+    pool_b: String(row.pool_b),
+    pool_draw: String(row.pool_draw),
+    total_pool: String(row.total_pool),
+  };
+}
+
+/**
+ * Records current implied probabilities for all active markets at a minute boundary.
+ * The unique market/time/source key makes concurrent application instances safe.
+ */
+export async function recordProbabilitySnapshots(): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, date_trunc('minute', statement_timestamp()), 'interval',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE status IN ('open', 'locked')
+     ON CONFLICT (market_id, sampled_at, source) DO NOTHING
+     RETURNING market_id`,
+  );
+  return rows.length;
+}
+
+/**
+ * Records an event-driven snapshot after the market state has been updated.
+ */
+export async function recordProbabilitySnapshot(market_id: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, 'event',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE market_id = $1`,
+    [market_id],
+  );
+}
+
+/**
+ * Returns historical implied probabilities in ascending sampling order.
+ */
+export async function getProbabilityHistory(
+  market_id: string,
+  filters: ProbabilityHistoryFilters,
+): Promise<ProbabilitySnapshot[]> {
+  const market = await pool.query('SELECT 1 FROM markets WHERE market_id = $1', [market_id]);
+  if (market.rows.length === 0) throw AppError.notFound(`Market not found: ${market_id}`);
+
+  const values: unknown[] = [market_id];
+  const conditions = ['market_id = $1'];
+  if (filters.from) {
+    values.push(filters.from);
+    conditions.push(`sampled_at >= $${values.length}`);
+  }
+  if (filters.to) {
+    values.push(filters.to);
+    conditions.push(`sampled_at <= $${values.length}`);
+  }
+  values.push(filters.limit);
+
+  const { rows } = await pool.query(
+    `SELECT market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+            pool_a, pool_b, pool_draw, total_pool
+     FROM probability_snapshots
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY sampled_at ASC
+     LIMIT $${values.length}`,
+    values,
+  );
+  return rows.map(mapProbabilitySnapshot);
+}
+
 /**
  * Returns paginated markets from the database.
  *
  * Steps:
- *   1. Build WHERE clause from filters (status, weight_class, fighter name, date range)
+ *   1. Check Redis cache — return cached result if fresh (TTL 30s)
+ *   2. Apply filters, sorting, and pagination in PostgreSQL
+ *   3. Store the paginated result in cache before returning
+ *   1. Build WHERE clause from filters (status, category, weight class, fighter, date range)
  *   2. Apply pagination (LIMIT / OFFSET)
  *   3. Check Redis cache — return cached result if fresh (TTL 30s)
  *   4. Query DB if cache miss; store result in cache before returning
@@ -259,6 +430,9 @@ export async function getMarkets(
   pagination?: Pagination,
 ): Promise<MarketListResult> {
   const statusKey = filters?.status ?? '';
+  const categoryKey = filters?.category ?? filters?.weight_class ?? '';
+  const searchKey = filters?.search?.trim() ?? '';
+  const categoryKey = filters?.category ?? '';
   const weightKey = filters?.weight_class ?? '';
   const fighterKey = filters?.fighter ?? '';
   const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
@@ -266,7 +440,18 @@ export async function getMarkets(
   const sortKey = filters?.sort ?? 'date_desc';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
+  const cacheKey = `markets:${JSON.stringify({
+    status: statusKey,
+    category: categoryKey,
+    search: searchKey,
+    fighter: fighterKey,
+    dateFrom: dateFromKey,
+    dateTo: dateToKey,
+    sort: sortKey,
+    page,
+    limit,
+  })}`;
+  const cacheKey = `markets:${statusKey}:${categoryKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
   const cached = await cache.get<MarketListResult>(cacheKey);
   if (cached) return cached;
 
@@ -275,6 +460,16 @@ export async function getMarkets(
     const markets = await db().findMarkets(filters);
     const filtered = markets.filter((market) => {
       if (filters?.status && market.status !== filters.status) return false;
+      const category = filters?.category ?? filters?.weight_class;
+      if (category && market.weight_class.toLowerCase() !== category.toLowerCase()) return false;
+      if (searchKey) {
+        const searchTerms = searchKey.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+        const searchableText =
+          `${market.fighter_a} ${market.fighter_b} ${market.weight_class} ${market.venue}`.toLowerCase();
+        const searchableTerms = new Set(searchableText.match(/[\p{L}\p{N}_]+/gu) ?? []);
+        if (!searchTerms.every((term) => searchableTerms.has(term))) return false;
+      }
+      if (filters?.category && !getMarketCategoryDescendants(filters.category).includes(market.category)) return false;
       if (filters?.weight_class && market.weight_class !== filters.weight_class) return false;
       if (filters?.fighter) {
         const fighterLower = filters.fighter.toLowerCase();
@@ -301,6 +496,7 @@ export async function getMarkets(
     const paged = sorted.slice(offset, offset + limit);
     result = { markets: paged, total: sorted.length };
   } else {
+    const { whereSql, values } = buildMarketWhere(filters);
     const whereClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -311,6 +507,10 @@ export async function getMarkets(
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
@@ -325,7 +525,8 @@ export async function getMarkets(
       whereClauses.push(`scheduled_at <= $${values.length}`);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    whereClauses.unshift('deleted_at IS NULL');
+    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
     const orderBySql = 
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -367,6 +568,77 @@ export async function invalidateMarketCache(market_id: string): Promise<void> {
   await cache.delPattern(`markets:*`);
   await cache.del(`market:${market_id}:stats`);
 }
+
+// ---------------------------------------------------------------------------
+// Autocomplete suggestions
+// ---------------------------------------------------------------------------
+
+export interface FighterSuggestion {
+  name: string;
+  market_id: string;
+  side: 'a' | 'b';
+}
+
+/**
+ * Returns up to `limit` distinct fighter names that ILIKE-match the query.
+ *
+ * When a real DB is available it runs a direct parameterised query.
+ * When a mock DbAdapter is injected (tests) it scans the adapter's findMarkets result.
+ *
+ * Results are cached for 10 seconds (suggestions are cheap but called on every keystroke).
+ */
+export async function getFighterSuggestions(
+  query: string,
+  limit = 8,
+): Promise<FighterSuggestion[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const cacheKey = `suggestions:${trimmed.toLowerCase()}:${limit}`;
+  const cached = await cache.get<FighterSuggestion[]>(cacheKey);
+  if (cached) return cached;
+
+  let suggestions: FighterSuggestion[];
+
+  if (_db) {
+    // Mock-adapter path: scan all markets and filter in-process
+    const markets = await db().findMarkets();
+    const lower = trimmed.toLowerCase();
+    const seen = new Set<string>();
+    suggestions = [];
+
+    for (const market of markets) {
+      if (suggestions.length >= limit) break;
+      if (market.fighter_a.toLowerCase().includes(lower) && !seen.has(market.fighter_a)) {
+        seen.add(market.fighter_a);
+        suggestions.push({ name: market.fighter_a, market_id: String(market.market_id), side: 'a' });
+      }
+      if (suggestions.length < limit && market.fighter_b.toLowerCase().includes(lower) && !seen.has(market.fighter_b)) {
+        seen.add(market.fighter_b);
+        suggestions.push({ name: market.fighter_b, market_id: String(market.market_id), side: 'b' });
+      }
+    }
+  } else {
+    // Real DB path: use UNION to query both fighter columns efficiently
+    const { rows } = await pool.query<{ name: string; market_id: string; side: 'a' | 'b' }>(
+      `SELECT fighter_a AS name, market_id::text AS market_id, 'a'::text AS side
+         FROM markets
+        WHERE fighter_a ILIKE $1
+       UNION
+       SELECT fighter_b AS name, market_id::text AS market_id, 'b'::text AS side
+         FROM markets
+        WHERE fighter_b ILIKE $1
+        LIMIT $2`,
+      [`%${trimmed}%`, limit],
+    );
+    suggestions = rows;
+  }
+
+  await cache.set(cacheKey, suggestions, 10);
+  return suggestions;
+}
+
+
 
 /**
  * Returns a single market by its on-chain market_id string, enriched with
@@ -627,14 +899,16 @@ export async function getBetsByMarket(
   }
 
   const values: unknown[] = [market_id];
-  let sql = 'SELECT * FROM bets WHERE market_id = $1';
+  let sql = `SELECT b.* FROM bets b
+             JOIN markets m ON m.market_id = b.market_id
+             WHERE b.market_id = $1 AND m.deleted_at IS NULL`;
 
   if (bettor_address) {
     values.push(bettor_address);
-    sql += ` AND bettor_address = $${values.length}`;
+    sql += ` AND b.bettor_address = $${values.length}`;
   }
 
-  sql += ' ORDER BY placed_at DESC';
+  sql += ' ORDER BY b.placed_at DESC';
 
   const { rows } = await pool.query(sql, values);
   return rows.map((row) => ({
@@ -674,6 +948,119 @@ export async function getMarketStats(market_id: string): Promise<MarketStats> {
 
   await cache.set(cacheKey, stats, 60);
   return stats;
+}
+
+/**
+ * Returns platform-wide market analytics for research and reporting.
+ */
+export async function getMarketAnalytics() {
+  const [overviewResult, statusResult, weightClassResult, topMarketsResult] = await Promise.all([
+    pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM markets) AS total_markets,
+         (SELECT COUNT(*) FROM markets WHERE status = 'open') AS active_markets,
+         (SELECT COALESCE(SUM(total_pool), 0) FROM markets) AS total_volume,
+         (SELECT COUNT(*) FROM bets) AS total_bets,
+         (SELECT COUNT(DISTINCT bettor_address) FROM bets) AS unique_bettors,
+         (SELECT COALESCE(AVG(amount), 0) FROM bets) AS average_bet`,
+    ),
+    pool.query(
+      `SELECT status, COUNT(*) AS market_count, COALESCE(SUM(total_pool), 0) AS total_volume
+       FROM markets GROUP BY status ORDER BY status`,
+    ),
+    pool.query(
+      `WITH market_totals AS (
+         SELECT weight_class, COUNT(*) AS market_count, COALESCE(SUM(total_pool), 0) AS total_volume
+         FROM markets GROUP BY weight_class
+       ), bet_totals AS (
+         SELECT m.weight_class, COUNT(b.id) AS total_bets
+         FROM markets m LEFT JOIN bets b ON b.market_id = m.market_id
+         GROUP BY m.weight_class
+       )
+       SELECT mt.weight_class, mt.market_count, mt.total_volume,
+              COALESCE(bt.total_bets, 0) AS total_bets
+       FROM market_totals mt LEFT JOIN bet_totals bt USING (weight_class)
+       ORDER BY mt.total_volume DESC, mt.weight_class`,
+    ),
+    pool.query(
+      `SELECT m.market_id, m.match_id, m.fighter_a, m.fighter_b, m.weight_class,
+              m.status, m.total_pool, COUNT(b.id) AS total_bets,
+              COUNT(DISTINCT b.bettor_address) AS unique_bettors
+       FROM markets m LEFT JOIN bets b ON b.market_id = m.market_id
+      GROUP BY m.market_id, m.match_id, m.fighter_a, m.fighter_b,
+          m.weight_class, m.status, m.total_pool, m.scheduled_at
+       ORDER BY m.total_pool DESC, total_bets DESC, m.scheduled_at ASC
+       LIMIT 10`,
+    ),
+  ]);
+
+  const overview = overviewResult.rows[0];
+  return {
+    totalMarkets: Number(overview.total_markets) || 0,
+    activeMarkets: Number(overview.active_markets) || 0,
+    totalVolumeXlm: (Number(overview.total_volume) || 0) / 10_000_000,
+    totalBets: Number(overview.total_bets) || 0,
+    uniqueBettors: Number(overview.unique_bettors) || 0,
+    averageBetXlm: (Number(overview.average_bet) || 0) / 10_000_000,
+    marketsByStatus: statusResult.rows.map((row) => ({
+      status: row.status,
+      marketCount: Number(row.market_count) || 0,
+      totalVolumeXlm: (Number(row.total_volume) || 0) / 10_000_000,
+    })),
+    marketsByWeightClass: weightClassResult.rows.map((row) => ({
+      weightClass: row.weight_class,
+      marketCount: Number(row.market_count) || 0,
+      totalVolumeXlm: (Number(row.total_volume) || 0) / 10_000_000,
+      totalBets: Number(row.total_bets) || 0,
+    })),
+    topMarkets: topMarketsResult.rows.map((row) => ({
+      ...row,
+      total_pool_xlm: (Number(row.total_pool) || 0) / 10_000_000,
+      total_bets: Number(row.total_bets) || 0,
+      unique_bettors: Number(row.unique_bettors) || 0,
+    })),
+  };
+}
+
+/**
+ * Recommends open markets using a user's past weight-class activity, with
+ * popular open markets as a useful fallback for users without betting history.
+ */
+export async function getRecommendedMarkets(userId: string, limit = 10) {
+  const { rows: userRows } = await pool.query(
+    'SELECT stellar_address FROM users WHERE id = $1',
+    [userId],
+  );
+  const bettorAddress = userRows[0]?.stellar_address as string | null | undefined;
+
+  const { rows } = await pool.query(
+    `WITH preferences AS (
+       SELECT m.weight_class, COUNT(*) AS preference_score
+       FROM bets b JOIN markets m ON m.market_id = b.market_id
+       WHERE b.bettor_address = $1
+       GROUP BY m.weight_class
+     )
+     SELECT m.*, COALESCE(p.preference_score, 0) AS personalization_score,
+            CASE WHEN p.weight_class IS NULL THEN 'popular' ELSE 'based_on_history' END AS recommendation_reason
+     FROM markets m
+     LEFT JOIN preferences p ON p.weight_class = m.weight_class
+     WHERE m.status = 'open'
+       AND ($1::text IS NULL OR NOT EXISTS (
+         SELECT 1 FROM bets mine WHERE mine.market_id = m.market_id AND mine.bettor_address = $1
+       ))
+     ORDER BY p.preference_score DESC NULLS LAST, m.total_pool DESC, m.scheduled_at ASC
+     LIMIT $2`,
+    [bettorAddress || null, limit],
+  );
+
+  return {
+    personalized: Boolean(bettorAddress),
+    markets: rows.map((row) => ({
+      ...row,
+      personalization_score: Number(row.personalization_score) || 0,
+      total_pool_xlm: (Number(row.total_pool) || 0) / 10_000_000,
+    })),
+  };
 }
 
 /**
@@ -812,7 +1199,7 @@ export async function getPlatformStats(): Promise<PlatformStats> {
   }
 
   const marketsResult = await pool.query(
-    "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as active, SUM(total_pool) as volume FROM markets"
+    "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as active, SUM(total_pool) as volume FROM markets WHERE deleted_at IS NULL"
   );
 
   const betsResult = await pool.query('SELECT COUNT(*) as total FROM bets');
