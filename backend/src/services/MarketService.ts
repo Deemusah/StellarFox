@@ -760,6 +760,119 @@ export async function getMarketStats(market_id: string): Promise<MarketStats> {
 }
 
 /**
+ * Returns platform-wide market analytics for research and reporting.
+ */
+export async function getMarketAnalytics() {
+  const [overviewResult, statusResult, weightClassResult, topMarketsResult] = await Promise.all([
+    pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM markets) AS total_markets,
+         (SELECT COUNT(*) FROM markets WHERE status = 'open') AS active_markets,
+         (SELECT COALESCE(SUM(total_pool), 0) FROM markets) AS total_volume,
+         (SELECT COUNT(*) FROM bets) AS total_bets,
+         (SELECT COUNT(DISTINCT bettor_address) FROM bets) AS unique_bettors,
+         (SELECT COALESCE(AVG(amount), 0) FROM bets) AS average_bet`,
+    ),
+    pool.query(
+      `SELECT status, COUNT(*) AS market_count, COALESCE(SUM(total_pool), 0) AS total_volume
+       FROM markets GROUP BY status ORDER BY status`,
+    ),
+    pool.query(
+      `WITH market_totals AS (
+         SELECT weight_class, COUNT(*) AS market_count, COALESCE(SUM(total_pool), 0) AS total_volume
+         FROM markets GROUP BY weight_class
+       ), bet_totals AS (
+         SELECT m.weight_class, COUNT(b.id) AS total_bets
+         FROM markets m LEFT JOIN bets b ON b.market_id = m.market_id
+         GROUP BY m.weight_class
+       )
+       SELECT mt.weight_class, mt.market_count, mt.total_volume,
+              COALESCE(bt.total_bets, 0) AS total_bets
+       FROM market_totals mt LEFT JOIN bet_totals bt USING (weight_class)
+       ORDER BY mt.total_volume DESC, mt.weight_class`,
+    ),
+    pool.query(
+      `SELECT m.market_id, m.match_id, m.fighter_a, m.fighter_b, m.weight_class,
+              m.status, m.total_pool, COUNT(b.id) AS total_bets,
+              COUNT(DISTINCT b.bettor_address) AS unique_bettors
+       FROM markets m LEFT JOIN bets b ON b.market_id = m.market_id
+      GROUP BY m.market_id, m.match_id, m.fighter_a, m.fighter_b,
+          m.weight_class, m.status, m.total_pool, m.scheduled_at
+       ORDER BY m.total_pool DESC, total_bets DESC, m.scheduled_at ASC
+       LIMIT 10`,
+    ),
+  ]);
+
+  const overview = overviewResult.rows[0];
+  return {
+    totalMarkets: Number(overview.total_markets) || 0,
+    activeMarkets: Number(overview.active_markets) || 0,
+    totalVolumeXlm: (Number(overview.total_volume) || 0) / 10_000_000,
+    totalBets: Number(overview.total_bets) || 0,
+    uniqueBettors: Number(overview.unique_bettors) || 0,
+    averageBetXlm: (Number(overview.average_bet) || 0) / 10_000_000,
+    marketsByStatus: statusResult.rows.map((row) => ({
+      status: row.status,
+      marketCount: Number(row.market_count) || 0,
+      totalVolumeXlm: (Number(row.total_volume) || 0) / 10_000_000,
+    })),
+    marketsByWeightClass: weightClassResult.rows.map((row) => ({
+      weightClass: row.weight_class,
+      marketCount: Number(row.market_count) || 0,
+      totalVolumeXlm: (Number(row.total_volume) || 0) / 10_000_000,
+      totalBets: Number(row.total_bets) || 0,
+    })),
+    topMarkets: topMarketsResult.rows.map((row) => ({
+      ...row,
+      total_pool_xlm: (Number(row.total_pool) || 0) / 10_000_000,
+      total_bets: Number(row.total_bets) || 0,
+      unique_bettors: Number(row.unique_bettors) || 0,
+    })),
+  };
+}
+
+/**
+ * Recommends open markets using a user's past weight-class activity, with
+ * popular open markets as a useful fallback for users without betting history.
+ */
+export async function getRecommendedMarkets(userId: string, limit = 10) {
+  const { rows: userRows } = await pool.query(
+    'SELECT stellar_address FROM users WHERE id = $1',
+    [userId],
+  );
+  const bettorAddress = userRows[0]?.stellar_address as string | null | undefined;
+
+  const { rows } = await pool.query(
+    `WITH preferences AS (
+       SELECT m.weight_class, COUNT(*) AS preference_score
+       FROM bets b JOIN markets m ON m.market_id = b.market_id
+       WHERE b.bettor_address = $1
+       GROUP BY m.weight_class
+     )
+     SELECT m.*, COALESCE(p.preference_score, 0) AS personalization_score,
+            CASE WHEN p.weight_class IS NULL THEN 'popular' ELSE 'based_on_history' END AS recommendation_reason
+     FROM markets m
+     LEFT JOIN preferences p ON p.weight_class = m.weight_class
+     WHERE m.status = 'open'
+       AND ($1::text IS NULL OR NOT EXISTS (
+         SELECT 1 FROM bets mine WHERE mine.market_id = m.market_id AND mine.bettor_address = $1
+       ))
+     ORDER BY p.preference_score DESC NULLS LAST, m.total_pool DESC, m.scheduled_at ASC
+     LIMIT $2`,
+    [bettorAddress || null, limit],
+  );
+
+  return {
+    personalized: Boolean(bettorAddress),
+    markets: rows.map((row) => ({
+      ...row,
+      personalization_score: Number(row.personalization_score) || 0,
+      total_pool_xlm: (Number(row.total_pool) || 0) / 10_000_000,
+    })),
+  };
+}
+
+/**
  * Returns a portfolio summary for a Stellar address.
  *
  * active_bets:    bets in Open/Locked markets

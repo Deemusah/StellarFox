@@ -21,6 +21,8 @@ import marketRouter from "./routes/market.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
+import disputesRouter from "./routes/disputes.routes";
+import userActivityRouter from "./routes/userActivity.routes";
 
 import engagementRouter from "./routes/engagement.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
@@ -113,6 +115,8 @@ app.use("/api/bets", claimsRouter);
 app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/users", usersRouter);
+app.use("/api/disputes", disputesRouter);
+app.use("/api/v1/user-activity", userActivityRouter);
 app.use("/api/admin", adminRouter);
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));

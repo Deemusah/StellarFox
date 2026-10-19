@@ -10,7 +10,10 @@ class DisputesController {
 
   async submitDispute(req: AuthenticatedRequest, res: Response) {
     try {
-      const userId = req.user!.userId;
+      const userId = req.userId || req.user?.userId;
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
       const { marketId, reason, evidenceUrl } = req.body;
 
       const cooldownCheck = await pool.query(
@@ -47,10 +50,10 @@ class DisputesController {
       }
 
       const result = await pool.query(
-        `INSERT INTO disputes (market_id, user_id, reason, status, raised_at)
-         VALUES ($1, $2, $3, 'open', NOW())
+        `INSERT INTO disputes (market_id, user_id, reason, evidence_url, status, raised_at)
+         VALUES ($1, $2, $3, $4, 'open', NOW())
          RETURNING *`,
-        [marketId, userId, reason],
+        [marketId, userId, reason, evidenceUrl || null],
       );
 
       return res.status(201).json({
@@ -119,7 +122,11 @@ class DisputesController {
     try {
       const { disputeId } = req.params;
       const result = await pool.query(
-        `SELECT * FROM disputes WHERE id = $1`,
+        `SELECT d.id, d.market_id, d.reason, d.evidence_url, d.status, d.final_outcome,
+                d.raised_at, d.reviewed_at, d.resolved_at,
+                m.match_id, m.fighter_a, m.fighter_b, m.outcome AS market_outcome
+         FROM disputes d JOIN markets m ON m.market_id = d.market_id
+         WHERE d.id = $1`,
         [disputeId],
       );
 
@@ -127,9 +134,52 @@ class DisputesController {
         return res.status(404).json({ success: false, message: 'Dispute not found' });
       }
 
-      return res.status(200).json({ success: true, data: result.rows[0] });
+      const dispute = result.rows[0];
+      const history = [
+        { status: 'open', at: dispute.raised_at },
+        dispute.reviewed_at && { status: 'reviewing', at: dispute.reviewed_at },
+        dispute.resolved_at && { status: dispute.status, at: dispute.resolved_at },
+      ].filter(Boolean);
+
+      return res.status(200).json({ success: true, data: { ...dispute, history } });
     } catch (error) {
       logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.getDispute');
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async listMyDisputes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const userId = req.userId || req.user?.userId;
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+      const offset = (page - 1) * limit;
+      const [countResult, result] = await Promise.all([
+        pool.query('SELECT COUNT(*) AS total FROM disputes WHERE user_id = $1', [userId]),
+        pool.query(
+          `SELECT d.id, d.market_id, d.reason, d.evidence_url, d.status, d.final_outcome,
+                  d.raised_at, d.reviewed_at, d.resolved_at,
+                  m.match_id, m.fighter_a, m.fighter_b, m.outcome AS market_outcome
+           FROM disputes d JOIN markets m ON m.market_id = d.market_id
+           WHERE d.user_id = $1 ORDER BY d.raised_at DESC LIMIT $2 OFFSET $3`,
+          [userId, limit, offset],
+        ),
+      ]);
+      const total = Number(countResult.rows[0]?.total) || 0;
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          disputes: result.rows,
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        },
+      });
+    } catch (error) {
+      logger.error(error instanceof Error ? error : new Error(String(error)), 'DisputesController.listMyDisputes');
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }

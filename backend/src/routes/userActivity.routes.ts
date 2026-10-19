@@ -3,6 +3,7 @@ import { validate } from '../api/middleware/validate';
 import { requireAuth } from '../middleware/auth.middleware';
 import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
+import { pool } from '../config/db';
 import {
   getUserActivityQuery,
   updateUserPreferencesBody,
@@ -22,21 +23,16 @@ const router = Router();
  * @swagger
  * /api/v1/user-activity:
  *   get:
- *     summary: Get user activity log with filtering
+ *     summary: Get betting and claim activity history
  *     tags: [UserActivity]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: userId
- *         schema:
- *           type: string
- *           format: uuid
- *       - in: query
  *         name: action
  *         schema:
  *           type: string
- *           enum: [login, logout, bet_placed, bet_claimed, profile_updated, 2fa_enabled, 2fa_disabled]
+ *           enum: [bet_placed, bet_claimed]
  *       - in: query
  *         name: from
  *         schema:
@@ -71,7 +67,6 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = req.query as {
-        userId?: string;
         action?: string;
         from?: string;
         to?: string;
@@ -79,24 +74,56 @@ router.get(
         limit: number;
       };
 
-      // Placeholder: In production, query from audit_logs or user_activity table
-      const activities = [
-        {
-          id: '1',
-          userId: query.userId || 'system',
-          action: query.action || 'login',
-          timestamp: new Date().toISOString(),
-          metadata: { ip: req.ip, userAgent: req.headers['user-agent'] },
-        },
-      ];
+      const userId = (req as Request & { userId?: string }).userId;
+      if (!userId) throw new AppError(401, 'Authentication required');
+      const { rows: userRows } = await pool.query(
+        'SELECT stellar_address FROM users WHERE id = $1',
+        [userId],
+      );
+      const address = userRows[0]?.stellar_address as string | null | undefined;
+      const page = query.page;
+      const limit = query.limit;
+      let activities: unknown[] = [];
+      let total = 0;
+
+      if (address) {
+        const filters = [address, query.action || null, query.from || null, query.to || null];
+        const activityCte = `WITH activity AS (
+          SELECT b.id::text || ':placed' AS id, 'bet_placed' AS action, b.placed_at AS timestamp,
+               b.market_id, m.fighter_a, m.fighter_b, b.side,
+               b.amount / 10000000.0 AS amount_xlm, b.tx_hash
+          FROM bets b JOIN markets m ON m.market_id = b.market_id
+          WHERE b.bettor_address = $1
+          UNION ALL
+          SELECT b.id::text || ':claimed' AS id, 'bet_claimed' AS action, b.claimed_at AS timestamp,
+               b.market_id, m.fighter_a, m.fighter_b, b.side,
+               COALESCE(b.payout, 0) / 10000000.0 AS amount_xlm, b.tx_hash
+          FROM bets b JOIN markets m ON m.market_id = b.market_id
+          WHERE b.bettor_address = $1 AND b.claimed = TRUE AND b.claimed_at IS NOT NULL
+        )`;
+        const where = `WHERE ($2::text IS NULL OR action = $2)
+          AND ($3::timestamptz IS NULL OR timestamp >= $3)
+          AND ($4::timestamptz IS NULL OR timestamp <= $4)`;
+        const countResult = await pool.query(
+          `${activityCte} SELECT COUNT(*) AS total FROM activity ${where}`,
+          filters,
+        );
+        total = Number(countResult.rows[0]?.total) || 0;
+        const result = await pool.query(
+          `${activityCte} SELECT * FROM activity ${where}
+           ORDER BY timestamp DESC LIMIT $5 OFFSET $6`,
+          [...filters, limit, (page - 1) * limit],
+        );
+        activities = result.rows;
+      }
 
       res.json({
         data: activities,
         pagination: {
           page: query.page,
           limit: query.limit,
-          total: activities.length,
-          totalPages: 1,
+          total,
+          totalPages: Math.ceil(total / limit),
         },
       });
     } catch (err) {
