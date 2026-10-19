@@ -76,6 +76,8 @@ pub enum ContractError {
     DisputeCooldownActive = 34,
     /// finalize_resolution called on a market not in ResolutionPending state
     ResolutionNotPending = 35,
+    /// Outcome schema version is unsupported or does not match the market
+    InvalidOutcomeVersion = 36,
 
     // ── Treasury ───────────────────────────────────────────
     /// Fee withdrawals are temporarily paused
@@ -102,6 +104,8 @@ pub enum ContractError {
     WasmHashNotSet = 53,
     /// Oracle address is not whitelisted
     OracleNotWhitelisted = 54,
+    /// Token address is not supported by the treasury
+    TokenNotWhitelisted = 55,
 
     // ── Reentrancy ─────────────────────────────────────────
     /// A claim or refund transfer is already in progress
@@ -110,4 +114,8 @@ pub enum ContractError {
     // ── Slippage ────────────────────────────────────────────
     /// Computed shares out are below the caller's min_shares_out tolerance
     SlippageExceeded = 61,
+    /// Token precision is unsupported or an amount cannot be represented exactly
+    InvalidTokenPrecision = 62,
+    /// A market cannot accept more than one token contract
+    MarketTokenMismatch = 63,
 }

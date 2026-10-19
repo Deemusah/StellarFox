@@ -4,6 +4,8 @@
 // Contributors: do not add business logic here — model only.
 // ============================================================
 
+import type { MarketCategory } from './MarketCategory';
+
 export interface Market {
   /** Auto-increment primary key */
   id: number;
@@ -15,6 +17,7 @@ export interface Market {
   match_id: string;
   fighter_a: string;
   fighter_b: string;
+  category: MarketCategory;
   weight_class: string;
   title_fight: boolean;
   venue: string;

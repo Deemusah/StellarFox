@@ -86,6 +86,9 @@ components:
         match_id:         { type: string }
         fighter_a:        { type: string }
         fighter_b:        { type: string }
+        category:
+          type: string
+          enum: [BOXING, MMA, KICKBOXING, OTHER]
         weight_class:     { type: string }
         title_fight:      { type: boolean }
         venue:            { type: string }
@@ -320,6 +323,29 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+
+  /metrics/export:
+    get:
+      summary: Export application metrics
+      operationId: exportMetrics
+      tags: [System]
+      parameters:
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: Download metrics in JSON or CSV format
+          content:
+            application/json:
+              schema: { type: array, items: { type: object } }
+            text/csv:
+              schema: { type: string }
+        '400':
+          description: Unsupported export format
 
   # ---------------------------------------------------------------------------
   # Auth
@@ -1166,6 +1192,12 @@ paths:
           schema:
             type: string
             enum: [open, locked, resolved, cancelled, disputed]
+        - name: category
+          in: query
+          description: Filter by a category or the COMBAT_SPORTS parent category.
+          schema:
+            type: string
+            enum: [BOXING, MMA, KICKBOXING, OTHER, COMBAT_SPORTS]
         - name: weight_class
           in: query
           schema: { type: string }

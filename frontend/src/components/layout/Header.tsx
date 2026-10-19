@@ -61,8 +61,8 @@ export function Header(): JSX.Element {
       )}
 
       <header className="sticky top-0 z-40 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 transition-colors">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-6">
-          <Link href="/" className="font-black text-amber-500 text-xl tracking-tight">
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-1 px-3 sm:gap-6 sm:px-4">
+          <Link href="/" className="shrink-0 text-lg font-black text-amber-500 sm:text-xl">
             BANKERCHANGER
           </Link>
 
@@ -75,20 +75,20 @@ export function Header(): JSX.Element {
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-1 sm:gap-3">
             {/* Network badge */}
             <span
-              className={`text-xs font-semibold px-2 py-0.5 rounded-full ${IS_MAINNET ? 'bg-green-600 text-white' : 'bg-amber-500/20 text-amber-400'}`}
+              className={`hidden rounded-full px-2 py-0.5 text-xs font-semibold sm:inline-flex ${IS_MAINNET ? 'bg-green-600 text-white' : 'bg-amber-500/20 text-amber-400'}`}
             >
               {IS_MAINNET ? 'MAINNET' : 'TESTNET'}
             </span>
 
-            <ThemeToggle />
+            <div className="hidden md:block"><ThemeToggle /></div>
             <WalletConnectButton />
 
             {/* Mobile hamburger */}
             <button
-              className="md:hidden flex items-center justify-center w-11 h-11 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+              className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-white md:hidden"
               onClick={() => setMenuOpen((o) => !o)}
               aria-label="Toggle menu"
               aria-expanded={menuOpen}
@@ -114,6 +114,10 @@ export function Header(): JSX.Element {
                 {label}
               </Link>
             ))}
+            <div className="flex min-h-[44px] items-center justify-between border-t border-gray-200 dark:border-gray-800">
+              <span className="text-gray-600 dark:text-gray-400">Theme</span>
+              <ThemeToggle />
+            </div>
           </nav>
         )}
       </header>

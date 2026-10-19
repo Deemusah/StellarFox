@@ -81,4 +81,29 @@ export const cronBlockchainEventsDeleted = new Counter({
   help: 'Total processed blockchain_events rows deleted by cleanup cron',
 });
 
+export type MetricsExportFormat = 'json' | 'csv';
+
+function escapeCsv(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export async function exportMetrics(format: MetricsExportFormat): Promise<string> {
+  const metrics = await register.getMetricsAsJSON();
+  if (format === 'json') return JSON.stringify(metrics);
+
+  const rows = ['name,type,help,labels,value'];
+  for (const metric of metrics) {
+    for (const sample of metric.values) {
+      rows.push([
+        metric.name,
+        metric.type,
+        metric.help,
+        JSON.stringify(sample.labels),
+        String(sample.value),
+      ].map(escapeCsv).join(','));
+    }
+  }
+  return rows.join('\r\n');
+}
+
 export { register };
