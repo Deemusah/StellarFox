@@ -99,3 +99,76 @@ View the OpenAPI specification:
 - Use `npm run lint` to check code style
 - Run `npm run test` to execute tests
 - Use Drizzle Studio for database visualization: `npm run drizzle:studio`
+
+## Backup and Disaster Recovery Plan
+
+This section documents the backup strategy, recovery procedures, and the RTO/RPO targets for the StellarFox backend. It covers documentation and recovery test procedures only; multi-region replication, automated failover, and DR automation are explicitly out of scope.
+
+### Recovery Objectives
+
+| Objective | Target | Description |
+| --- | --- | --- |
+| **RTO** (Recovery Time Objective) | 4 hours | Maximum acceptable time to restore the API and database to a serving state after a disaster. |
+| **RPO** (Recovery Point Objective) | 1 hour | Maximum acceptable data loss window; backups must be taken at least hourly. |
+
+These targets apply to the primary PostgreSQL database and the application configuration. Redis is treated as a cache and may be rebuilt from source data (RPO/RTO not enforced).
+
+### Backup Strategy
+
+- **Database (PostgreSQL)**
+  - Full logical backup daily via `pg_dump`.
+  - Incremental/WAL archiving enabled so point-in-time recovery (PITR) is possible within the 1-hour RPO.
+  - Backups are encrypted at rest and stored in an off-host location separate from the primary database.
+- **Configuration and Secrets**
+  - `.env` values and infrastructure configuration are stored in the team's secret manager, not in the repository.
+  - A copy of non-secret configuration is version-controlled.
+- **Retention**
+  - Daily backups retained for 30 days.
+  - Weekly backups retained for 12 weeks.
+  - Monthly backups retained for 12 months.
+
+### Restore Procedures
+
+1. **Provision a clean environment**
+   - Spin up a fresh PostgreSQL instance (or restore into an isolated recovery database).
+2. **Restore the database**
+   ```bash
+   # Full restore from the most recent dump
+   pg_restore --clean --if-exists --dbname "$DATABASE_URL" /backups/stellarfox_latest.dump
+   ```
+   - For point-in-time recovery, restore the base backup and replay WAL segments up to the desired timestamp.
+3. **Restore configuration**
+   - Re-apply environment variables from the secret manager and verify `DATABASE_URL`, `REDIS_URL`, and `PORT`.
+4. **Run migrations**
+   ```bash
+   npm run migrate
+   ```
+5. **Start the service and verify**
+   ```bash
+   npm run dev
+   ```
+   - Confirm the API responds at [http://localhost:3001](http://localhost:3001) and `/api-docs` loads.
+6. **Validate data integrity**
+   - Run the recovery test checklist below and confirm RTO/RPO are met.
+
+### Recovery Test Procedure (Checklist)
+
+Run this checklist at least quarterly, and after any change to the backup or restore process. Record the start time to measure RTO and the timestamp of the newest restored record to measure RPO.
+
+- [ ] **Pre-test**: Confirm the latest backup exists and is not older than the 1-hour RPO window.
+- [ ] **Pre-test**: Verify backup integrity (checksum / `pg_restore --list`).
+- [ ] **Restore**: Restore the database into an isolated environment using the steps above.
+- [ ] **Restore**: Re-apply configuration and run `npm run migrate` successfully.
+- [ ] **Verify**: Start the service and confirm health/API endpoints respond.
+- [ ] **Verify**: Run `npm run test` against the restored environment and confirm tests pass.
+- [ ] **RTO check**: Confirm total restore time is within the 4-hour RTO target.
+- [ ] **RPO check**: Confirm the newest restored record is within the 1-hour RPO target.
+- [ ] **Document**: Record the test date, measured RTO/RPO, and any issues found; file follow-ups as needed.
+
+### Roles and Escalation
+
+- **Incident lead**: Coordinates the recovery effort and communicates status.
+- **Database owner**: Executes restore and validates data integrity.
+- **Application owner**: Restores configuration, runs migrations, and verifies the service.
+
+Escalate to the incident lead immediately if the measured RTO or RPO exceeds the targets above.

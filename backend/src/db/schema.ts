@@ -32,6 +32,7 @@ export const markets = pgTable(
     pool_b: numeric('pool_b').default('0'),
     pool_draw: numeric('pool_draw').default('0'),
     total_pool: numeric('total_pool').default('0'),
+    min_bet_amount: numeric('min_bet_amount').notNull().default('1000000'),
     fee_bps: integer('fee_bps').default(200),
     resolved_at: timestamp('resolved_at', { withTimezone: true }),
     oracle_used: text('oracle_used'),

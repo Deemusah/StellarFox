@@ -1,9 +1,31 @@
 import cron from 'node-cron';
 import { logger } from '../utils/logger';
 import { runAutoResolutionJob, runAutoLockMarketsJob } from '../oracle/OracleService';
+import { withDistributedLock } from '../utils/distributedLock';
 
 let isResolutionRunning = false;
 let isLockRunning = false;
+
+const runAutoResolutionWithLock = withDistributedLock('autoResolution', 30 * 60, async () => {
+  if (isResolutionRunning) {
+    logger.warn('autoResolutionJob: previous run still in progress, skipping');
+    return;
+  }
+
+  isResolutionRunning = true;
+  logger.info('autoResolutionJob: starting');
+
+  try {
+    // runAutoResolutionJob processes each market independently, so one failure
+    // does not prevent the remaining markets from being handled.
+    const stats = await runAutoResolutionJob();
+    logger.info(stats, 'autoResolutionJob: completed');
+  } catch (err) {
+    logger.error({ err }, 'autoResolutionJob: fatal error, batch aborted');
+  } finally {
+    isResolutionRunning = false;
+  }
+});
 
 export function startAutoResolutionCron(): void {
   if (process.env.AUTO_RESOLUTION_CRON_DISABLED === 'true') {
@@ -12,34 +34,31 @@ export function startAutoResolutionCron(): void {
   }
 
   // Every 10 minutes
-  cron.schedule('*/10 * * * *', async () => {
-    if (isResolutionRunning) {
-      logger.warn('autoResolutionJob: previous run still in progress, skipping');
-      return;
-    }
-
-    isResolutionRunning = true;
-    logger.info('autoResolutionJob: starting');
-
-    try {
-      // runAutoResolutionJob processes each market in an independent try/catch loop.
-      // A failure in one market (RPC timeout, contract error) is caught per-market,
-      // logged with market_id + error details, and the batch continues — subsequent
-      // markets are always processed regardless of earlier failures.
-      // After FAILURE_THRESHOLD consecutive failures for the same market, an alert is sent.
-      const stats = await runAutoResolutionJob();
-      logger.info(stats, 'autoResolutionJob: completed');
-    } catch (err) {
-      // Top-level catch handles fatal errors (e.g. DB unavailable before any market is queried).
-      // Individual market failures are handled inside runAutoResolutionJob and never propagate here.
-      logger.error({ err }, 'autoResolutionJob: fatal error, batch aborted');
-    } finally {
-      isResolutionRunning = false;
-    }
-  });
+  cron.schedule('*/10 * * * *', runAutoResolutionWithLock);
 
   logger.info('Auto-resolution cron job scheduled (every 10 minutes)');
 }
+
+const runAutoLockWithLock = withDistributedLock('autoLockMarkets', 5 * 60, async () => {
+  if (isLockRunning) {
+    logger.warn('autoLockJob: previous run still in progress, skipping');
+    return;
+  }
+
+  isLockRunning = true;
+  logger.debug('autoLockJob: starting');
+
+  try {
+    const { locked, failed } = await runAutoLockMarketsJob();
+    if (locked > 0 || failed > 0) {
+      logger.info({ locked, failed }, 'autoLockJob: completed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'autoLockJob: failed');
+  } finally {
+    isLockRunning = false;
+  }
+});
 
 export function startAutoLockCron(): void {
   if (process.env.AUTO_LOCK_CRON_DISABLED === 'true') {
@@ -48,26 +67,7 @@ export function startAutoLockCron(): void {
   }
 
   // Every 60 seconds — lock markets whose lock threshold has passed
-  cron.schedule('* * * * *', async () => {
-    if (isLockRunning) {
-      logger.warn('autoLockJob: previous run still in progress, skipping');
-      return;
-    }
-
-    isLockRunning = true;
-    logger.debug('autoLockJob: starting');
-
-    try {
-      const { locked, failed } = await runAutoLockMarketsJob();
-      if (locked > 0 || failed > 0) {
-        logger.info({ locked, failed }, 'autoLockJob: completed');
-      }
-    } catch (err) {
-      logger.error({ err }, 'autoLockJob: failed');
-    } finally {
-      isLockRunning = false;
-    }
-  });
+  cron.schedule('* * * * *', runAutoLockWithLock);
 
   logger.info('Auto-lock cron job scheduled (every 60 seconds)');
 }

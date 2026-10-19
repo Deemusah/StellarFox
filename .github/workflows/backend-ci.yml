@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - 'backend/**'
+      - 'k8s/**'
   pull_request:
     paths:
       - 'backend/**'
+      - 'k8s/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
