@@ -22,6 +22,7 @@ export const markets = pgTable(
     match_id: text('match_id').notNull(),
     fighter_a: text('fighter_a').notNull(),
     fighter_b: text('fighter_b').notNull(),
+    category: text('category').notNull().default('OTHER'),
     weight_class: text('weight_class').default(''),
     title_fight: boolean('title_fight').default(false),
     venue: text('venue').default(''),
@@ -32,6 +33,7 @@ export const markets = pgTable(
     pool_b: numeric('pool_b').default('0'),
     pool_draw: numeric('pool_draw').default('0'),
     total_pool: numeric('total_pool').default('0'),
+    min_bet_amount: numeric('min_bet_amount').notNull().default('1000000'),
     fee_bps: integer('fee_bps').default(200),
     resolved_at: timestamp('resolved_at', { withTimezone: true }),
     oracle_used: text('oracle_used'),
@@ -43,6 +45,7 @@ export const markets = pgTable(
   (table) => ({
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
     status_idx: index('markets_status_idx').on(table.status),
+    category_idx: index('markets_category_idx').on(table.category),
     scheduled_at_idx: index('markets_scheduled_at_idx').on(table.scheduled_at),
   }),
 );

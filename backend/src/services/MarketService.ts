@@ -5,6 +5,7 @@
 // ============================================================
 
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
+import { getMarketCategoryDescendants, type MarketCategoryFilter } from '../models/MarketCategory';
 import type { Bet } from '../models/Bet';
 import { pool } from '../config/db';
 import * as cache from './cache.service';
@@ -61,6 +62,10 @@ export const defaultDbAdapter: DbAdapter = {
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
@@ -177,6 +182,7 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
 
 export interface MarketFilters {
   status?: string;
+  category?: MarketCategoryFilter;
   weight_class?: string;
   fighter?: string;
   dateFrom?: Date;
@@ -248,7 +254,7 @@ export interface ProjectedPayout {
  * Returns paginated markets from the database.
  *
  * Steps:
- *   1. Build WHERE clause from filters (status, weight_class, fighter name, date range)
+ *   1. Build WHERE clause from filters (status, category, weight class, fighter, date range)
  *   2. Apply pagination (LIMIT / OFFSET)
  *   3. Check Redis cache — return cached result if fresh (TTL 30s)
  *   4. Query DB if cache miss; store result in cache before returning
@@ -259,6 +265,7 @@ export async function getMarkets(
   pagination?: Pagination,
 ): Promise<MarketListResult> {
   const statusKey = filters?.status ?? '';
+  const categoryKey = filters?.category ?? '';
   const weightKey = filters?.weight_class ?? '';
   const fighterKey = filters?.fighter ?? '';
   const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
@@ -266,7 +273,7 @@ export async function getMarkets(
   const sortKey = filters?.sort ?? 'date_desc';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
+  const cacheKey = `markets:${statusKey}:${categoryKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
   const cached = await cache.get<MarketListResult>(cacheKey);
   if (cached) return cached;
 
@@ -275,6 +282,7 @@ export async function getMarkets(
     const markets = await db().findMarkets(filters);
     const filtered = markets.filter((market) => {
       if (filters?.status && market.status !== filters.status) return false;
+      if (filters?.category && !getMarketCategoryDescendants(filters.category).includes(market.category)) return false;
       if (filters?.weight_class && market.weight_class !== filters.weight_class) return false;
       if (filters?.fighter) {
         const fighterLower = filters.fighter.toLowerCase();
@@ -311,6 +319,10 @@ export async function getMarkets(
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
@@ -367,6 +379,77 @@ export async function invalidateMarketCache(market_id: string): Promise<void> {
   await cache.delPattern(`markets:*`);
   await cache.del(`market:${market_id}:stats`);
 }
+
+// ---------------------------------------------------------------------------
+// Autocomplete suggestions
+// ---------------------------------------------------------------------------
+
+export interface FighterSuggestion {
+  name: string;
+  market_id: string;
+  side: 'a' | 'b';
+}
+
+/**
+ * Returns up to `limit` distinct fighter names that ILIKE-match the query.
+ *
+ * When a real DB is available it runs a direct parameterised query.
+ * When a mock DbAdapter is injected (tests) it scans the adapter's findMarkets result.
+ *
+ * Results are cached for 10 seconds (suggestions are cheap but called on every keystroke).
+ */
+export async function getFighterSuggestions(
+  query: string,
+  limit = 8,
+): Promise<FighterSuggestion[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const cacheKey = `suggestions:${trimmed.toLowerCase()}:${limit}`;
+  const cached = await cache.get<FighterSuggestion[]>(cacheKey);
+  if (cached) return cached;
+
+  let suggestions: FighterSuggestion[];
+
+  if (_db) {
+    // Mock-adapter path: scan all markets and filter in-process
+    const markets = await db().findMarkets();
+    const lower = trimmed.toLowerCase();
+    const seen = new Set<string>();
+    suggestions = [];
+
+    for (const market of markets) {
+      if (suggestions.length >= limit) break;
+      if (market.fighter_a.toLowerCase().includes(lower) && !seen.has(market.fighter_a)) {
+        seen.add(market.fighter_a);
+        suggestions.push({ name: market.fighter_a, market_id: String(market.market_id), side: 'a' });
+      }
+      if (suggestions.length < limit && market.fighter_b.toLowerCase().includes(lower) && !seen.has(market.fighter_b)) {
+        seen.add(market.fighter_b);
+        suggestions.push({ name: market.fighter_b, market_id: String(market.market_id), side: 'b' });
+      }
+    }
+  } else {
+    // Real DB path: use UNION to query both fighter columns efficiently
+    const { rows } = await pool.query<{ name: string; market_id: string; side: 'a' | 'b' }>(
+      `SELECT fighter_a AS name, market_id::text AS market_id, 'a'::text AS side
+         FROM markets
+        WHERE fighter_a ILIKE $1
+       UNION
+       SELECT fighter_b AS name, market_id::text AS market_id, 'b'::text AS side
+         FROM markets
+        WHERE fighter_b ILIKE $1
+        LIMIT $2`,
+      [`%${trimmed}%`, limit],
+    );
+    suggestions = rows;
+  }
+
+  await cache.set(cacheKey, suggestions, 10);
+  return suggestions;
+}
+
+
 
 /**
  * Returns a single market by its on-chain market_id string, enriched with

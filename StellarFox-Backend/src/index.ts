@@ -12,6 +12,7 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
+import { tracingMiddleware } from "./middleware/tracing.middleware";
 import { AppError } from "./utils/AppError";
 import { logger } from "./utils/logger";
 import { pool } from "./config/db";
@@ -43,6 +44,9 @@ const app = express();
 
 // CORS configuration - must be before other middleware
 app.use(createCorsMiddleware());
+
+// Distributed tracing - must be early so all downstream spans are correlated
+app.use(tracingMiddleware);
 
 // Middleware
 app.use(pinoHttp({ logger }));

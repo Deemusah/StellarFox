@@ -11,11 +11,13 @@ import {
   lockMarketGroup3ParamsSchema,
   lockMarketGroup3BodySchema,
 } from '../schemas/marketGroup3.schemas';
+import type { ListMarketsGroup3Query } from '../schemas/marketGroup3.schemas';
 import { validateQuery, validateParams, validateBody } from '../api/middleware/validate';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
 import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
+import { getMarketCategoryDescendants } from '../models/MarketCategory';
 
 const router = Router();
 
@@ -45,6 +47,7 @@ const createMarketLimiter = rateLimit({ windowMs: 60_000, max: 10, keyBy: 'ip' }
  *         name: category
  *         schema:
  *           type: string
+ *           enum: [BOXING, MMA, KICKBOXING, OTHER, COMBAT_SPORTS]
  *       - in: query
  *         name: search
  *         schema:
@@ -84,16 +87,7 @@ router.get(
   validateQuery(listMarketsGroup3QuerySchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const query = req.query as unknown as {
-        status?: string;
-        category?: string;
-        search?: string;
-        minPool?: number;
-        maxPool?: number;
-        sort?: string;
-        page: number;
-        limit: number;
-      };
+      const query = req.query as unknown as ListMarketsGroup3Query;
 
       const page = query.page || 1;
       const limit = query.limit || 20;
@@ -105,6 +99,11 @@ router.get(
       if (query.status) {
         values.push(query.status);
         whereClauses.push(`status = $${values.length}`);
+      }
+
+      if (query.category) {
+        values.push(getMarketCategoryDescendants(query.category));
+        whereClauses.push(`category = ANY($${values.length}::text[])`);
       }
 
       if (query.search) {
@@ -212,7 +211,7 @@ router.get(
  *         application/json:
  *           schema:
  *             type: object
- *             required: [fighter_a, fighter_b, weight_class, scheduled_at]
+ *             required: [fighter_a, fighter_b, category, weight_class, scheduled_at]
  *     responses:
  *       201:
  *         description: Market created successfully
@@ -234,10 +233,13 @@ router.post(
 
       const insertResult = await pool.query(
         `INSERT INTO markets (
-          market_id, contract_address, match_id, fighter_a, fighter_b,
+          market_id, contract_address, match_id, fighter_a, fighter_b, category,
           weight_class, title_fight, venue, scheduled_at, fee_bps,
           lock_before_secs, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
+          market_id, contract_address, match_id, fighter_a, fighter_b,
+          weight_class, title_fight, venue, scheduled_at, min_bet_amount,
+          fee_bps, lock_before_secs, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'open')
         RETURNING *`,
         [
           marketId,
@@ -245,10 +247,12 @@ router.post(
           `match_${Date.now()}`,
           body.fighter_a,
           body.fighter_b,
+          body.category,
           body.weight_class,
           body.title_fight,
           body.venue,
           body.scheduled_at,
+          body.min_bet_amount,
           body.fee_bps,
           body.lock_before_secs,
         ]
