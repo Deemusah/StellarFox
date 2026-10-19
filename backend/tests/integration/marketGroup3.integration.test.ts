@@ -71,6 +71,32 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
       expect(res.body.data.pagination.total).toBe(2);
     });
 
+    it('filters by category hierarchy', async () => {
+      (pool.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+        .mockResolvedValueOnce({ rows: [{ market_id: 'm1', category: 'BOXING' }] });
+
+      const res = await request(app)
+        .get('/api/v2/markets')
+        .query({ category: 'COMBAT_SPORTS' });
+
+      expect(res.status).toBe(200);
+      expect(pool.query).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('category = ANY($1::text[])'),
+        [['BOXING', 'MMA', 'KICKBOXING', 'OTHER']],
+      );
+    });
+
+    it('rejects categories outside the defined hierarchy', async () => {
+      const res = await request(app)
+        .get('/api/v2/markets')
+        .query({ category: 'WRESTLING' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.errors).toBeDefined();
+    });
+
     it('rejects invalid status filter with 422', async () => {
       const res = await request(app)
         .get('/api/v2/markets')
@@ -118,12 +144,67 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
     });
   });
 
+  describe('GET /api/v2/markets/:id/audit', () => {
+    it('returns paginated audit events in timestamp order to admins', async () => {
+      const auditEvent = {
+        id: '3',
+        market_id: 'mkt_123',
+        operation: 'UPDATE',
+        before_snapshot: { status: 'open' },
+        after_snapshot: { status: 'locked' },
+        changed_fields: ['status'],
+        occurred_at: '2026-10-18T10:00:00.000Z',
+      };
+      (pool.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [{ count: '3' }] })
+        .mockResolvedValueOnce({ rows: [auditEvent] });
+
+      const res = await request(app)
+        .get('/api/v2/markets/mkt_123/audit')
+        .query({ page: 2, limit: 1 })
+        .set('Authorization', `Bearer ${validAdminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.events).toEqual([auditEvent]);
+      expect(res.body.data.pagination).toEqual({
+        page: 2,
+        limit: 1,
+        total: 3,
+        totalPages: 3,
+      });
+      expect(pool.query).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('ORDER BY occurred_at ASC, id ASC'),
+        ['mkt_123', 1, 1]
+      );
+    });
+
+    it('requires admin authentication', async () => {
+      const res = await request(app).get('/api/v2/markets/mkt_123/audit');
+
+      expect(res.status).toBe(401);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid pagination parameters', async () => {
+      const res = await request(app)
+        .get('/api/v2/markets/mkt_123/audit')
+        .query({ page: 0, limit: 101 })
+        .set('Authorization', `Bearer ${validAdminToken}`);
+
+      expect(res.status).toBe(422);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /api/v2/markets', () => {
     const validMarketPayload = {
       fighter_a: 'Canelo Alvarez',
       fighter_b: 'Terence Crawford',
+      category: 'BOXING',
       weight_class: 'Super Middleweight',
       scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+      min_bet_amount: 1_000_000,
       fee_bps: 250,
       lock_before_secs: 1800,
     };
@@ -141,6 +222,7 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
       expect(res.body.data.market_id).toBe('mkt_new');
+      expect(res.body.data.category).toBe('BOXING');
     });
 
     it('rejects request without admin authorization token with 401', async () => {
@@ -166,6 +248,15 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
         .post('/api/v2/markets')
         .set('Authorization', `Bearer ${validAdminToken}`)
         .send({ ...validMarketPayload, fee_bps: 1500 });
+
+      expect(res.status).toBe(422);
+    });
+
+    it('rejects min_bet_amount below 1 with 422', async () => {
+      const res = await request(app)
+        .post('/api/v2/markets')
+        .set('Authorization', `Bearer ${validAdminToken}`)
+        .send({ ...validMarketPayload, min_bet_amount: 0 });
 
       expect(res.status).toBe(422);
     });

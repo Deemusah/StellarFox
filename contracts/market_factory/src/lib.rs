@@ -113,6 +113,8 @@ impl MarketFactory {
             lock_before_secs: config.default_lock_before_secs,
             resolution_window: config.default_resolution_window,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         };
         env.storage()
             .persistent()
@@ -180,6 +182,9 @@ impl MarketFactory {
         }
         if config.max_bet < config.min_bet_amount {
             return Err(ContractError::InvalidMarketParameters);
+        }
+        if config.token_decimals > boxmeout_shared::math::MAX_TOKEN_DECIMALS {
+            return Err(ContractError::InvalidTokenPrecision);
         }
         // Tier 0 = untiered/default; any positive u32 is valid (e.g. 18, 20, etc.)
         // No upper bound enforced — factory admin is responsible for tier assignments.
@@ -762,7 +767,6 @@ mod tests {
             default_fee_bps: 200,
             default_lock_before_secs: 3600,
             default_resolution_window: 86400,
-            tier: 0,
         }
     }
 
@@ -786,6 +790,8 @@ mod tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1014,6 +1020,9 @@ mod scheduled_at_validation_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1201,7 +1210,6 @@ mod open_markets_cleanup_tests {
             default_fee_bps: 200,
             default_lock_before_secs: 3_600,
             default_resolution_window: 86_400,
-            tier: 0,
         });
 
         client.initialize(
@@ -1544,6 +1552,9 @@ mod task12_factory_market_integrity_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         };
 
         // 1. Fight scheduled in the past

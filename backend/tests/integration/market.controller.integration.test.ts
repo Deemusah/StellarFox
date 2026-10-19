@@ -207,3 +207,34 @@ describe('GET /api/stats', () => {
     expect(res.body).toMatchObject(mockPlatformStats);
   });
 });
+
+describe('GET /api/markets/stats', () => {
+  it('returns aggregated market analytics', async () => {
+    const analytics = { totalMarkets: 12, activeMarkets: 4, totalBets: 50 };
+    (MarketService.getMarketAnalytics as jest.Mock).mockResolvedValue(analytics);
+
+    const res = await request(app).get('/api/markets/stats');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject(analytics);
+  });
+});
+
+describe('Authenticated discovery and history routes', () => {
+  it('requires authentication for market recommendations', async () => {
+    const res = await request(app).get('/api/markets/recommendations');
+    expect(res.status).toBe(401);
+  });
+
+  it('requires authentication for activity history', async () => {
+    const res = await request(app).get('/api/v1/user-activity');
+    expect(res.status).toBe(401);
+  });
+
+  it('requires authentication for dispute details and personal history', async () => {
+    const detail = await request(app).get('/api/disputes/1');
+    const mine = await request(app).get('/api/disputes/mine');
+    expect(detail.status).toBe(401);
+    expect(mine.status).toBe(401);
+  });
+});

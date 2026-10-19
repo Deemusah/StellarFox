@@ -23,6 +23,7 @@
     "openapi:postman": "node scripts/generate-postman.js",
     "test": "jest --passWithNoTests",
     "benchmark:markets": "jest --runInBand tests/performance/market-search.bench.test.ts",
+    "test:autoscaling:cluster": "jest --runInBand tests/autoscaling/cluster-autoscaling.test.ts",
     "test:integration": "jest --passWithNoTests --testPathPatterns=tests/integration",
     "test:e2e": "jest --passWithNoTests --runInBand --testPathPatterns=tests/e2e"
   },

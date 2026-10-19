@@ -6,6 +6,7 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { Header } from '../components/layout/Header';
+import { Breadcrumb } from '../components/layout/Breadcrumb';
 import { QueryProvider } from '../providers/QueryProvider';
 import { ToastProvider } from '../components/ui/ToastProvider';
 import './globals.css';
@@ -39,6 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }):
         <QueryProvider>
           <ToastProvider>
             <Header />
+            <Breadcrumb />
             {children}
           </ToastProvider>
         </QueryProvider>

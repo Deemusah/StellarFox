@@ -1,0 +1,174 @@
+# ============================================================
+# BANKERCHANGER — alerting rules
+# ============================================================
+#
+# Loaded by Prometheus via `rule_files` in
+# `monitoring/prometheus/prometheus.yml`.
+#
+# Every expression below only references metric names that the
+# backend actually exports (see `backend/src/services/metrics.service.ts`).
+# `backend/tests/monitoring/monitoring.test.ts` enforces that guarantee.
+#
+# Severity vocabulary:
+#   critical — user-facing impact or imminent outage, page someone
+#   warning  — degraded, needs attention during business hours
+# ============================================================
+
+groups:
+  # ── Availability ─────────────────────────────────────────────
+  - name: bankerchanger-availability
+    interval: 30s
+    rules:
+      - alert: BackendTargetDown
+        expr: up{job="bankerchanger-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER backend metrics target is down'
+          description: >-
+            Prometheus has failed to scrape {{ $labels.instance }} for more than
+            2 minutes. The API is unreachable or not reporting metrics.
+          runbook: 'docs/runbook.md#rpc-node-outages'
+
+      - alert: BackendMetricsMissing
+        expr: absent(http_requests_total{job="bankerchanger-backend"})
+        for: 5m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER backend stopped reporting request metrics'
+          description: >-
+            The backend is scraped successfully but http_requests_total has
+            disappeared for more than 5 minutes. The metrics middleware is
+            probably not wired up.
+          runbook: 'docs/observability.md#verifying-the-setup'
+
+  # ── HTTP request health ───────────────────────────────────────
+  - name: bankerchanger-http
+    interval: 30s
+    rules:
+      - alert: HighHttpErrorRate
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER 5xx response rate above 5%'
+          description: >-
+            {{ $value | humanizePercentage }} of all requests have failed over
+            the last 5 minutes. Check application logs and the error middleware.
+          runbook: 'docs/runbook.md'
+
+      - alert: SlowHttpRequests
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER p95 HTTP latency above 2s'
+          description: >-
+            p95 request duration is {{ $value | humanizeDuration }}, well above
+            the 2s budget. Inspect slow database queries and external RPC calls.
+          runbook: 'docs/observability.md#grafana-dashboards'
+
+      - alert: LowCacheHitRate
+        expr: |
+          sum(rate(cache_hits_total[5m]))
+            / clamp_min(
+                sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])),
+                0.001
+              ) < 0.5
+        for: 15m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER Redis cache hit rate below 50%'
+          description: >-
+            Cache hit rate is {{ $value | humanizePercentage }} over the last
+            15 minutes. Redis may be unavailable or keys are expiring too fast.
+          runbook: 'docs/observability.md#alerting-rules'
+
+  # ── Data stores ───────────────────────────────────────────────
+  - name: bankerchanger-data-stores
+    interval: 30s
+    rules:
+      - alert: DatabaseQueryLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(db_query_duration_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: 'BANKERCHANGER p95 database query latency above 500ms'
+          description: >-
+            p95 query duration is {{ $value | humanizeDuration }}. Check for
+            missing indexes and long-running transactions.
+          runbook: 'docs/runbook.md#high-dispute-volumes'
+
+  # ── Realtime layer ────────────────────────────────────────────
+  - name: bankerchanger-websocket
+    interval: 30s
+    rules:
+      - alert: WebSocketConnectionsHigh
+        expr: websocket_active_connections > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER active WebSocket connections above 1000'
+          description: >-
+            {{ $value }} sockets are currently connected. The connection
+            flood guard may start rejecting legitimate clients.
+          runbook: 'docs/runbook.md#rpc-node-outages'
+
+  # ── Node.js runtime ───────────────────────────────────────────
+  - name: bankerchanger-runtime
+    interval: 30s
+    rules:
+      - alert: EventLoopLagHigh
+        expr: nodejs_eventloop_lag_p99_seconds > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER event loop lag above 500ms'
+          description: >-
+            p99 event loop lag is {{ $value | humanizeDuration }}. The event
+            loop is blocked — look for synchronous I/O or CPU heavy handlers.
+          runbook: 'docs/observability.md#grafana-dashboards'
+
+      - alert: HeapMemoryPressure
+        expr: nodejs_heap_size_used_bytes / clamp_min(nodejs_heap_size_total_bytes, 1) > 0.9
+        for: 15m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER heap usage above 90%'
+          description: >-
+            {{ $value | humanizePercentage }} of the V8 heap is in use. The
+            process is at risk of an out-of-memory crash.
+          runbook: 'docs/observability.md#grafana-dashboards'
+
+      - alert: CpuSaturation
+        expr: rate(process_cpu_seconds_total[5m]) > 1.5
+        for: 15m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'BANKERCHANGER using more than 1.5 CPU cores'
+          description: >-
+            Average CPU usage is {{ $value | humanize }} cores. Profile the
+            process before the box becomes the bottleneck.
+          runbook: 'docs/observability.md#grafana-dashboards'

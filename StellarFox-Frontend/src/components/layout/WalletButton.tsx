@@ -86,7 +86,7 @@ export function WalletButton(): JSX.Element {
           onClick={handleConnectClick}
           disabled={isConnecting}
           aria-label="Connect wallet"
-          className="min-h-[44px] px-4 rounded-lg bg-amber-500 hover:bg-amber-400 font-semibold text-black text-sm disabled:opacity-50"
+          className="min-h-[44px] rounded-lg bg-amber-500 px-2 text-sm font-semibold text-black hover:bg-amber-400 disabled:opacity-50 sm:px-4"
         >
           {isConnecting ? (
             <span className="flex items-center gap-2">
@@ -97,7 +97,7 @@ export function WalletButton(): JSX.Element {
               Connecting…
             </span>
           ) : (
-            'Connect Wallet'
+            <><span className="sm:hidden">Connect</span><span className="hidden sm:inline">Connect Wallet</span></>
           )}
         </button>
 
@@ -183,10 +183,10 @@ export function WalletButton(): JSX.Element {
         aria-label={`Wallet menu for ${address ?? 'connected wallet'}`}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="min-h-[44px] px-3 rounded-lg bg-gray-800 hover:bg-gray-700 text-sm text-white flex items-center gap-2"
+        className="flex min-h-[44px] items-center gap-2 rounded-lg bg-gray-800 px-2 text-sm text-white hover:bg-gray-700 sm:px-3"
       >
         <span className="font-mono">{short}</span>
-        {balance != null && <span className="text-gray-400 text-xs">{balance.toFixed(2)} XLM</span>}
+        {balance != null && <span className="hidden text-xs text-gray-400 sm:inline">{balance.toFixed(2)} XLM</span>}
       </button>
       {open && (
         <div role="menu" className="absolute right-0 mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-lg z-50 overflow-hidden">

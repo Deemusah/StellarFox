@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CATEGORIES, MARKET_CATEGORY_FILTERS } from '../models/MarketCategory';
 
 export const marketStatusEnum = z.enum([
   'open',
@@ -10,7 +11,7 @@ export const marketStatusEnum = z.enum([
 
 export const listMarketsGroup3QuerySchema = z.object({
   status: marketStatusEnum.optional(),
-  category: z.string().trim().min(1).max(50).optional(),
+  category: z.enum(MARKET_CATEGORY_FILTERS).optional(),
   search: z.string().trim().min(1).max(100).optional(),
   minPool: z.coerce.number().min(0, 'minPool must be >= 0').optional(),
   maxPool: z.coerce.number().min(0, 'maxPool must be >= 0').optional(),
@@ -33,6 +34,16 @@ export const getMarketGroup3ParamsSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, 'id must contain only alphanumeric, hyphen, or underscore characters'),
 });
 
+export const marketAuditTrailQuerySchema = z.object({
+  page: z.coerce.number().int().min(1, 'page must be an integer >= 1').default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1, 'limit must be >= 1')
+    .max(100, 'limit cannot exceed 100')
+    .default(20),
+});
+
 export const createMarketGroup3BodySchema = z.object({
   fighter_a: z
     .string({ required_error: 'fighter_a is required' })
@@ -44,6 +55,10 @@ export const createMarketGroup3BodySchema = z.object({
     .trim()
     .min(2, 'fighter_b must be at least 2 characters')
     .max(100, 'fighter_b must not exceed 100 characters'),
+  category: z.enum(MARKET_CATEGORIES, {
+    required_error: 'category is required',
+    invalid_type_error: `category must be one of: ${MARKET_CATEGORIES.join(', ')}`,
+  }),
   weight_class: z
     .string({ required_error: 'weight_class is required' })
     .trim()
@@ -54,6 +69,12 @@ export const createMarketGroup3BodySchema = z.object({
   scheduled_at: z
     .string({ required_error: 'scheduled_at is required' })
     .datetime({ message: 'scheduled_at must be a valid ISO-8601 datetime string' }),
+  min_bet_amount: z
+    .number()
+    .int('min_bet_amount must be an integer')
+    .min(1, 'min_bet_amount must be at least 1 stroop')
+    .optional()
+    .default(1_000_000),
   fee_bps: z
     .number()
     .int('fee_bps must be an integer')
@@ -83,5 +104,6 @@ export const lockMarketGroup3BodySchema = z.object({
 
 export type ListMarketsGroup3Query = z.infer<typeof listMarketsGroup3QuerySchema>;
 export type GetMarketGroup3Params = z.infer<typeof getMarketGroup3ParamsSchema>;
+export type MarketAuditTrailQuery = z.infer<typeof marketAuditTrailQuerySchema>;
 export type CreateMarketGroup3Body = z.infer<typeof createMarketGroup3BodySchema>;
 export type LockMarketGroup3Body = z.infer<typeof lockMarketGroup3BodySchema>;

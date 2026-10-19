@@ -4,7 +4,9 @@
 // Contributors: implement every function marked TODO.
 // ============================================================
 
+import type { Market, MarketStats, PlatformStats, ProbabilitySnapshot } from '../models/Market';
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
+import { getMarketCategoryDescendants, type MarketCategoryFilter } from '../models/MarketCategory';
 import type { Bet } from '../models/Bet';
 import { pool } from '../config/db';
 import * as cache from './cache.service';
@@ -61,6 +63,10 @@ export const defaultDbAdapter: DbAdapter = {
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
@@ -177,6 +183,7 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
 
 export interface MarketFilters {
   status?: string;
+  category?: MarketCategoryFilter;
   weight_class?: string;
   fighter?: string;
   dateFrom?: Date;
@@ -244,11 +251,109 @@ export interface ProjectedPayout {
   formatted_xlm: number;
 }
 
+export interface ProbabilityHistoryFilters {
+  from?: Date;
+  to?: Date;
+  limit: number;
+}
+
+function mapProbabilitySnapshot(row: Record<string, unknown>): ProbabilitySnapshot {
+  return {
+    market_id: String(row.market_id),
+    sampled_at: new Date(row.sampled_at as string | number | Date),
+    source: row.source as ProbabilitySnapshot['source'],
+    probability_a: Number(row.probability_a),
+    probability_b: Number(row.probability_b),
+    probability_draw: Number(row.probability_draw),
+    pool_a: String(row.pool_a),
+    pool_b: String(row.pool_b),
+    pool_draw: String(row.pool_draw),
+    total_pool: String(row.total_pool),
+  };
+}
+
+/**
+ * Records current implied probabilities for all active markets at a minute boundary.
+ * The unique market/time/source key makes concurrent application instances safe.
+ */
+export async function recordProbabilitySnapshots(): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, date_trunc('minute', statement_timestamp()), 'interval',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE status IN ('open', 'locked')
+     ON CONFLICT (market_id, sampled_at, source) DO NOTHING
+     RETURNING market_id`,
+  );
+  return rows.length;
+}
+
+/**
+ * Records an event-driven snapshot after the market state has been updated.
+ */
+export async function recordProbabilitySnapshot(market_id: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, 'event',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE market_id = $1`,
+    [market_id],
+  );
+}
+
+/**
+ * Returns historical implied probabilities in ascending sampling order.
+ */
+export async function getProbabilityHistory(
+  market_id: string,
+  filters: ProbabilityHistoryFilters,
+): Promise<ProbabilitySnapshot[]> {
+  const market = await pool.query('SELECT 1 FROM markets WHERE market_id = $1', [market_id]);
+  if (market.rows.length === 0) throw AppError.notFound(`Market not found: ${market_id}`);
+
+  const values: unknown[] = [market_id];
+  const conditions = ['market_id = $1'];
+  if (filters.from) {
+    values.push(filters.from);
+    conditions.push(`sampled_at >= $${values.length}`);
+  }
+  if (filters.to) {
+    values.push(filters.to);
+    conditions.push(`sampled_at <= $${values.length}`);
+  }
+  values.push(filters.limit);
+
+  const { rows } = await pool.query(
+    `SELECT market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+            pool_a, pool_b, pool_draw, total_pool
+     FROM probability_snapshots
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY sampled_at ASC
+     LIMIT $${values.length}`,
+    values,
+  );
+  return rows.map(mapProbabilitySnapshot);
+}
+
 /**
  * Returns paginated markets from the database.
  *
  * Steps:
- *   1. Build WHERE clause from filters (status, weight_class, fighter name, date range)
+ *   1. Build WHERE clause from filters (status, category, weight class, fighter, date range)
  *   2. Apply pagination (LIMIT / OFFSET)
  *   3. Check Redis cache — return cached result if fresh (TTL 30s)
  *   4. Query DB if cache miss; store result in cache before returning
@@ -259,6 +364,7 @@ export async function getMarkets(
   pagination?: Pagination,
 ): Promise<MarketListResult> {
   const statusKey = filters?.status ?? '';
+  const categoryKey = filters?.category ?? '';
   const weightKey = filters?.weight_class ?? '';
   const fighterKey = filters?.fighter ?? '';
   const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
@@ -266,7 +372,7 @@ export async function getMarkets(
   const sortKey = filters?.sort ?? 'date_desc';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
+  const cacheKey = `markets:${statusKey}:${categoryKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
   const cached = await cache.get<MarketListResult>(cacheKey);
   if (cached) return cached;
 
@@ -275,6 +381,7 @@ export async function getMarkets(
     const markets = await db().findMarkets(filters);
     const filtered = markets.filter((market) => {
       if (filters?.status && market.status !== filters.status) return false;
+      if (filters?.category && !getMarketCategoryDescendants(filters.category).includes(market.category)) return false;
       if (filters?.weight_class && market.weight_class !== filters.weight_class) return false;
       if (filters?.fighter) {
         const fighterLower = filters.fighter.toLowerCase();
@@ -311,6 +418,10 @@ export async function getMarkets(
     if (filters?.weight_class) {
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
+    }
+    if (filters?.category) {
+      values.push(getMarketCategoryDescendants(filters.category));
+      whereClauses.push(`category = ANY($${values.length}::text[])`);
     }
     if (filters?.fighter) {
       values.push(`%${filters.fighter}%`);
