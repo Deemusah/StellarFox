@@ -222,6 +222,7 @@ export interface components {
             match_id?: string;
             fighter_a?: string;
             fighter_b?: string;
+            category?: "BOXING" | "MMA" | "KICKBOXING" | "OTHER";
             weight_class?: string;
             title_fight?: boolean;
             venue?: string;
@@ -337,6 +338,7 @@ export interface operations {
         parameters: {
             query?: {
                 status?: "open" | "locked" | "resolved" | "cancelled" | "disputed";
+                category?: "BOXING" | "MMA" | "KICKBOXING" | "OTHER" | "COMBAT_SPORTS";
                 weight_class?: string;
                 page?: number;
                 limit?: number;

@@ -130,6 +130,12 @@ router.get('/search/suggestions', searchSuggestions);
  *         schema:
  *           type: string
  *           enum: [OPEN, LOCKED, RESOLVED, CANCELLED]
+ *       - in: query
+ *         name: category
+ *         description: Filter by a category or the COMBAT_SPORTS parent category.
+ *         schema:
+ *           type: string
+ *           enum: [BOXING, MMA, KICKBOXING, OTHER, COMBAT_SPORTS]
  *     responses:
  *       200:
  *         description: Paginated list of markets

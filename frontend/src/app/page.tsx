@@ -1,5 +1,6 @@
 // ============================================================
 // BANKERCHANGER — Home Page (/)
+// Lists markets with category filters, sorting, and pagination.
 // Lists all boxing markets with filters, sorting, and infinite scroll.
 // ============================================================
 
@@ -16,6 +17,7 @@ import { MarketCard } from '../components/market/MarketCard';
 import { MarketCardSkeleton } from '../components/market/MarketCardSkeleton';
 import { StatsBanner } from '../components/ui/StatsBanner';
 import { MarketFilters } from '../components/market/MarketFilters';
+import { MARKET_CATEGORY_FILTERS } from '../services/api';
 import { ScrollSentinel } from '../components/ui/ScrollSentinel';
 import { downloadMarketData, fetchAllMarkets } from '../utils/marketExport';
 
@@ -26,6 +28,8 @@ export default function HomePage(): JSX.Element {
   const searchParams = useSearchParams();
 
   const weightClass = searchParams.get('weight_class') ?? 'All Weight Classes';
+  const categoryParam = searchParams.get('category');
+  const category = MARKET_CATEGORY_FILTERS.find((value) => value === categoryParam);
   const status = searchParams.get('status') ?? 'All';
   const sort = searchParams.get('sort') ?? 'date_desc';
   const search = searchParams.get('search') ?? '';
@@ -72,6 +76,7 @@ export default function HomePage(): JSX.Element {
   const { markets, total, isLoading, error } = useMarkets(
     {
       weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+      category,
       status: status === 'All' ? undefined : status.toLowerCase(),
       search: search || undefined,
       sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
@@ -102,6 +107,8 @@ export default function HomePage(): JSX.Element {
   return (
     <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
       <div>
+        <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>
+        <p className="text-gray-400 text-sm mt-1">Decentralized combat sports prediction markets on Stellar</p>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>

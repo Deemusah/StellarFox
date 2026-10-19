@@ -26,6 +26,14 @@ const WEIGHT_CLASSES = [
   'Minimumweight',
 ] as const;
 
+const CATEGORY_LABELS = {
+  COMBAT_SPORTS: 'Combat Sports',
+  BOXING: 'Boxing',
+  MMA: 'MMA',
+  KICKBOXING: 'Kickboxing',
+  OTHER: 'Other',
+} as const;
+
 const STATUS_TABS = [
   { label: 'All',      value: '' },
   { label: 'Open',     value: 'open' },
@@ -44,6 +52,26 @@ interface MarketFiltersProps {
   status: string;
   sort: string;
   search: string;
+  sort: SortOption;
+  weightClass: string;
+  category: string;
+}
+
+interface MarketFiltersProps {
+  onChange?: (values: MarketFilterValues) => void;
+}
+
+export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.Element {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const status     = searchParams.get('status')      ?? '';
+  const sort       = (searchParams.get('sort')       ?? 'newest') as SortOption;
+  const searchParam = searchParams.get('search')     ?? '';
+  const weightClass = searchParams.get('weightClass') ?? '';
+  const category = searchParams.get('category') ?? '';
+
+  const [searchInput, setSearchInput] = useState(searchParam);
   onWeightClassChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onSortChange: (value: string) => void;
@@ -92,6 +120,10 @@ export function MarketFilters({
     }, 300);
   };
 
+  useEffect(() => {
+    onChange?.({ status, search: searchParam, sort, weightClass, category });
+  }, [status, searchParam, sort, weightClass, category, onChange]);
+
   const handleStatusKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const tabs = Array.from(statusTabsRef.current?.querySelectorAll('[role="tab"]') ?? []) as HTMLElement[];
     const currentIndex = tabs.findIndex((tab) => tab === document.activeElement);
@@ -122,6 +154,18 @@ export function MarketFilters({
         <option value="">All Weight Classes</option>
         {WEIGHT_CLASSES.filter(Boolean).map((w) => (
           <option key={w} value={w}>{w}</option>
+        ))}
+      </select>
+
+      <select
+        value={category}
+        onChange={(e) => setParam({ category: e.target.value || null })}
+        aria-label="Filter by market category"
+        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+      >
+        <option value="">All Categories</option>
+        {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
+          <option key={value} value={value}>{label}</option>
         ))}
       </select>
 

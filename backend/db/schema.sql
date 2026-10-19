@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS markets (
   match_id         TEXT        NOT NULL,
   fighter_a        TEXT        NOT NULL,
   fighter_b        TEXT        NOT NULL,
+  category         TEXT        NOT NULL DEFAULT 'OTHER',
   weight_class     TEXT        NOT NULL DEFAULT '',
   title_fight      BOOLEAN     NOT NULL DEFAULT FALSE,
   venue            TEXT        NOT NULL DEFAULT '',
@@ -23,6 +24,8 @@ CREATE TABLE IF NOT EXISTS markets (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ledger_sequence  INTEGER     NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS markets_category_idx ON markets(category);
 
 CREATE TABLE IF NOT EXISTS bets (
   id               SERIAL PRIMARY KEY,

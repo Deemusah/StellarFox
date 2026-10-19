@@ -1,6 +1,6 @@
 // ============================================================
 // BANKERCHANGER — Home Page (/)
-// Lists all boxing markets with filters, sorting, and pagination.
+// Lists markets with category filters, sorting, and pagination.
 // ============================================================
 
 'use client';
@@ -12,6 +12,7 @@ import { MarketCard } from '../components/market/MarketCard';
 import { MarketCardSkeleton } from '../components/market/MarketCardSkeleton';
 import { StatsBanner } from '../components/ui/StatsBanner';
 import { MarketFilters } from '../components/market/MarketFilters';
+import { MARKET_CATEGORY_FILTERS } from '../services/api';
 
 const LIMIT = 12;
 
@@ -20,6 +21,8 @@ export default function HomePage(): JSX.Element {
   const searchParams = useSearchParams();
 
   const weightClass = searchParams.get('weight_class') ?? 'All Weight Classes';
+  const categoryParam = searchParams.get('category');
+  const category = MARKET_CATEGORY_FILTERS.find((value) => value === categoryParam);
   const status = searchParams.get('status') ?? 'All';
   const sort = searchParams.get('sort') ?? 'date_desc';
   const page = Number(searchParams.get('page') ?? '1');
@@ -42,6 +45,7 @@ export default function HomePage(): JSX.Element {
   const { markets, total, isLoading, error } = useMarkets(
     {
       weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+      category,
       status: status === 'All' ? undefined : status.toLowerCase(),
       sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
     },
@@ -55,7 +59,7 @@ export default function HomePage(): JSX.Element {
     <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
       <div>
         <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>
-        <p className="text-gray-400 text-sm mt-1">Decentralized boxing prediction markets on Stellar</p>
+        <p className="text-gray-400 text-sm mt-1">Decentralized combat sports prediction markets on Stellar</p>
       </div>
 
       {/* Stats Banner */}
