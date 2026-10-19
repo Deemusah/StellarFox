@@ -5542,9 +5542,13 @@ mod property_based_integrity_tests {
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger, LedgerInfo},
-        Address, Env,
+        token::{Client as TokenClient, StellarAssetClient},
+        Address, Env, Symbol, Vec,
     };
-    use boxmeout_shared::types::{FightDetails, MarketConfig};
+    use boxmeout_shared::types::{
+        BetRecord, BetSide, FightDetails, MarketConfig, MarketState, MarketStatus,
+        OptionalOracleRole, OptionalOutcome, Outcome,
+    };
     use crate::Market;
 
     fn fight(env: &Env) -> FightDetails {
@@ -5727,6 +5731,74 @@ mod property_based_integrity_tests {
         assert_eq!(token.balance(&contract_id), 0, "Contract must retain no funds after settlement");
         assert!(client.has_claimed(&bettor_a), "Winner A bet must be marked claimed");
         assert!(client.has_claimed(&bettor_b), "Winner B bet must be marked claimed");
+    }
+
+    #[test]
+    fn test_batch_claim_pays_all_bettors_and_routes_fee_once() {
+        let env = Env::default();
+        let (client, contract_id, token_id, treasury) = setup(&env);
+        let bettor_a = Address::generate(&env);
+        let bettor_b = Address::generate(&env);
+        let state = resolved_state(&env, Outcome::FighterA, (6_000_000, 0, 0), 6_000_000);
+        let bets = Vec::from_array(
+            &env,
+            [
+                bet(&env, &bettor_a, BetSide::FighterA, 2_000_000),
+                bet(&env, &bettor_b, BetSide::FighterA, 4_000_000),
+            ],
+        );
+        seed(&env, &contract_id, &token_id, &state, &bets);
+
+        let bettors = Vec::from_array(&env, [bettor_a.clone(), bettor_b.clone()]);
+        let receipts = client.batch_claim(&bettors, &token_id);
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts.get(0).unwrap().amount_won, 1_960_000);
+        assert_eq!(receipts.get(0).unwrap().fee_deducted, 40_000);
+        assert_eq!(receipts.get(1).unwrap().amount_won, 3_920_000);
+        assert_eq!(receipts.get(1).unwrap().fee_deducted, 80_000);
+
+        let token = TokenClient::new(&env, &token_id);
+        assert_eq!(token.balance(&bettor_a), 1_960_000);
+        assert_eq!(token.balance(&bettor_b), 3_920_000);
+        assert_eq!(token.balance(&treasury), 120_000);
+        assert_eq!(token.balance(&contract_id), 0);
+        assert!(client.has_claimed(&bettor_a));
+        assert!(client.has_claimed(&bettor_b));
+    }
+
+    #[test]
+    fn test_batch_claim_invalid_item_leaves_all_bets_unclaimed() {
+        let env = Env::default();
+        let (client, contract_id, token_id, treasury) = setup(&env);
+        let bettor = Address::generate(&env);
+        let missing_bettor = Address::generate(&env);
+        let state = resolved_state(&env, Outcome::FighterA, (10_000_000, 0, 0), 10_000_000);
+        let bets = Vec::from_array(&env, [bet(&env, &bettor, BetSide::FighterA, 10_000_000)]);
+        seed(&env, &contract_id, &token_id, &state, &bets);
+
+        let bettors = Vec::from_array(&env, [bettor.clone(), missing_bettor]);
+        assert!(client.try_batch_claim(&bettors, &token_id).is_err());
+
+        let token = TokenClient::new(&env, &token_id);
+        assert!(!client.has_claimed(&bettor));
+        assert_eq!(token.balance(&bettor), 0);
+        assert_eq!(token.balance(&treasury), 0);
+        assert_eq!(token.balance(&contract_id), 10_000_000);
+    }
+
+    #[test]
+    fn test_batch_claim_rejects_duplicate_bettors() {
+        let env = Env::default();
+        let (client, contract_id, token_id, _treasury) = setup(&env);
+        let bettor = Address::generate(&env);
+        let state = resolved_state(&env, Outcome::FighterA, (10_000_000, 0, 0), 10_000_000);
+        let bets = Vec::from_array(&env, [bet(&env, &bettor, BetSide::FighterA, 10_000_000)]);
+        seed(&env, &contract_id, &token_id, &state, &bets);
+
+        let bettors = Vec::from_array(&env, [bettor.clone(), bettor.clone()]);
+        assert!(client.try_batch_claim(&bettors, &token_id).is_err());
+        assert!(!client.has_claimed(&bettor));
     }
 
     /// Cancelled market refund: full stake returned with NO fee, then blocked.

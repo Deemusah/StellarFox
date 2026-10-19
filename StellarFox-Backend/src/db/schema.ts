@@ -3,6 +3,7 @@ import {
   serial,
   text,
   numeric,
+  bigserial,
   boolean,
   timestamp,
   integer,
@@ -49,6 +50,34 @@ export const markets = pgTable(
   }),
 );
 
+export const probability_snapshots = pgTable(
+  'probability_snapshots',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    market_id: text('market_id').notNull(),
+    sampled_at: timestamp('sampled_at', { withTimezone: true }).notNull().defaultNow(),
+    source: text('source').notNull(),
+    probability_a: numeric('probability_a', { precision: 12, scale: 10 }).notNull(),
+    probability_b: numeric('probability_b', { precision: 12, scale: 10 }).notNull(),
+    probability_draw: numeric('probability_draw', { precision: 12, scale: 10 }).notNull(),
+    pool_a: numeric('pool_a').notNull(),
+    pool_b: numeric('pool_b').notNull(),
+    pool_draw: numeric('pool_draw').notNull(),
+    total_pool: numeric('total_pool').notNull(),
+  },
+  (table) => ({
+    market_sample_unique_idx: uniqueIndex('probability_snapshots_market_sample_unique').on(
+      table.market_id,
+      table.sampled_at,
+      table.source,
+    ),
+    market_sample_idx: index('probability_snapshots_market_sample_idx').on(
+      table.market_id,
+      table.sampled_at,
+    ),
+  }),
+);
+
 export const bets = pgTable(
   'bets',
   {
@@ -59,6 +88,7 @@ export const bets = pgTable(
     amount: numeric('amount').notNull(),
     amount_xlm: numeric('amount_xlm').default('0'),
     placed_at: timestamp('placed_at', { withTimezone: true }).defaultNow(),
+    expires_at: timestamp('expires_at', { withTimezone: true }),
     claimed: boolean('claimed').default(false),
     claimed_at: timestamp('claimed_at', { withTimezone: true }),
     payout: numeric('payout'),
@@ -68,6 +98,7 @@ export const bets = pgTable(
   (table) => ({
     market_id_idx: index('bets_market_id_idx').on(table.market_id),
     bettor_address_idx: index('bets_bettor_address_idx').on(table.bettor_address),
+    expires_at_idx: index('bets_expires_at_idx').on(table.expires_at),
     market_id_claimed_idx: index('bets_market_id_claimed_idx').on(table.market_id, table.claimed),
     tx_hash_idx: uniqueIndex('bets_tx_hash_idx').on(table.tx_hash),
   }),

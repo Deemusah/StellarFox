@@ -4,6 +4,7 @@
 // Contributors: implement every function marked TODO.
 // ============================================================
 
+import type { Market, MarketStats, PlatformStats, ProbabilitySnapshot } from '../models/Market';
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
 import { getMarketCategoryDescendants, type MarketCategoryFilter } from '../models/MarketCategory';
 import type { Bet } from '../models/Bet';
@@ -248,6 +249,104 @@ export interface BettorStats {
 export interface ProjectedPayout {
   amount: string;
   formatted_xlm: number;
+}
+
+export interface ProbabilityHistoryFilters {
+  from?: Date;
+  to?: Date;
+  limit: number;
+}
+
+function mapProbabilitySnapshot(row: Record<string, unknown>): ProbabilitySnapshot {
+  return {
+    market_id: String(row.market_id),
+    sampled_at: new Date(row.sampled_at as string | number | Date),
+    source: row.source as ProbabilitySnapshot['source'],
+    probability_a: Number(row.probability_a),
+    probability_b: Number(row.probability_b),
+    probability_draw: Number(row.probability_draw),
+    pool_a: String(row.pool_a),
+    pool_b: String(row.pool_b),
+    pool_draw: String(row.pool_draw),
+    total_pool: String(row.total_pool),
+  };
+}
+
+/**
+ * Records current implied probabilities for all active markets at a minute boundary.
+ * The unique market/time/source key makes concurrent application instances safe.
+ */
+export async function recordProbabilitySnapshots(): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, date_trunc('minute', statement_timestamp()), 'interval',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE status IN ('open', 'locked')
+     ON CONFLICT (market_id, sampled_at, source) DO NOTHING
+     RETURNING market_id`,
+  );
+  return rows.length;
+}
+
+/**
+ * Records an event-driven snapshot after the market state has been updated.
+ */
+export async function recordProbabilitySnapshot(market_id: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO probability_snapshots (
+       market_id, source, probability_a, probability_b, probability_draw,
+       pool_a, pool_b, pool_draw, total_pool
+     )
+     SELECT market_id, 'event',
+       CASE WHEN total_pool > 0 THEN pool_a / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_b / total_pool ELSE 1.0 / 3.0 END,
+       CASE WHEN total_pool > 0 THEN pool_draw / total_pool ELSE 1.0 / 3.0 END,
+       pool_a, pool_b, pool_draw, total_pool
+     FROM markets
+     WHERE market_id = $1`,
+    [market_id],
+  );
+}
+
+/**
+ * Returns historical implied probabilities in ascending sampling order.
+ */
+export async function getProbabilityHistory(
+  market_id: string,
+  filters: ProbabilityHistoryFilters,
+): Promise<ProbabilitySnapshot[]> {
+  const market = await pool.query('SELECT 1 FROM markets WHERE market_id = $1', [market_id]);
+  if (market.rows.length === 0) throw AppError.notFound(`Market not found: ${market_id}`);
+
+  const values: unknown[] = [market_id];
+  const conditions = ['market_id = $1'];
+  if (filters.from) {
+    values.push(filters.from);
+    conditions.push(`sampled_at >= $${values.length}`);
+  }
+  if (filters.to) {
+    values.push(filters.to);
+    conditions.push(`sampled_at <= $${values.length}`);
+  }
+  values.push(filters.limit);
+
+  const { rows } = await pool.query(
+    `SELECT market_id, sampled_at, source, probability_a, probability_b, probability_draw,
+            pool_a, pool_b, pool_draw, total_pool
+     FROM probability_snapshots
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY sampled_at ASC
+     LIMIT $${values.length}`,
+    values,
+  );
+  return rows.map(mapProbabilitySnapshot);
 }
 
 /**

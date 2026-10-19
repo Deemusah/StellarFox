@@ -146,6 +146,31 @@ impl Market {
             .ok_or(ContractError::MarketNotFound)
     }
 
+    fn calculate_claim_amounts(
+        bettor_stake: i128,
+        winning_pool: i128,
+        total_pool: i128,
+        net_pool: i128,
+        fee_bps: i128,
+    ) -> Result<(i128, i128), ContractError> {
+        if winning_pool == 0 {
+            return Ok((0, 0));
+        }
+        let gross_payout = bettor_stake
+            .checked_mul(total_pool)
+            .and_then(|value| value.checked_div(winning_pool))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let payout = bettor_stake
+            .checked_mul(net_pool)
+            .and_then(|value| value.checked_div(winning_pool))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let fee = gross_payout
+            .checked_mul(fee_bps)
+            .and_then(|value| value.checked_div(10_000))
+            .ok_or(ContractError::InsufficientAmount)?;
+        Ok((payout, fee))
+    }
+
     fn save_state(env: &Env, state: &MarketState) {
         env.storage().persistent().set(&STATE, state);
     }
@@ -1955,6 +1980,13 @@ impl Market {
             .total_pool
             .checked_sub(fee)
             .ok_or(ContractError::InsufficientAmount)?;
+        let (payout, fee) = Self::calculate_claim_amounts(
+            bettor_stake,
+            winning_pool,
+            state.total_pool,
+            net_pool,
+            state.config.fee_bps as i128,
+        )?;
         let payout = if winning_pool > 0 {
             bettor_stake
                 .checked_mul(net_pool)
@@ -2031,6 +2063,147 @@ impl Market {
 
         boxmeout_shared::emit_winnings_claimed(&env, state.market_id, receipt.clone());
         Ok(receipt)
+    }
+
+    /// Claims winnings for multiple bettors in one atomic invocation.
+    ///
+    /// Every bettor must authorize the transaction. Duplicate or invalid
+    /// claims reject the entire batch before any bet state is changed.
+    pub fn batch_claim(
+        env: Env,
+        bettors: Vec<Address>,
+        token: Address,
+    ) -> Result<Vec<ClaimReceipt>, ContractError> {
+        if bettors.is_empty() {
+            return Err(ContractError::InvalidAmount);
+        }
+        let mut seen_bettors: Map<Address, bool> = Map::new(&env);
+        for bettor in bettors.iter() {
+            bettor.require_auth();
+            if seen_bettors.contains_key(bettor.clone()) {
+                return Err(ContractError::InvalidAmount);
+            }
+            seen_bettors.set(bettor, true);
+        }
+
+        Self::require_not_paused(&env)?;
+        Self::require_not_claiming(&env)?;
+
+        let state = Self::load_state(&env)?;
+        if state.status == MarketStatus::Cancelled {
+            return Err(ContractError::MarketCancelled);
+        }
+        if state.status != MarketStatus::Resolved {
+            return Err(ContractError::MarketNotResolved);
+        }
+
+        let winning_outcome = match state.outcome.clone() {
+            OptionalOutcome::Some(outcome) => outcome,
+            OptionalOutcome::None => return Err(ContractError::InvalidOutcome),
+        };
+        let winning_side = match winning_outcome {
+            Outcome::FighterA => BetSide::FighterA,
+            Outcome::FighterB => BetSide::FighterB,
+            Outcome::Draw => BetSide::Draw,
+            Outcome::NoContest => return Err(ContractError::InvalidOutcome),
+        };
+        let winning_pool = match &winning_side {
+            BetSide::FighterA => state.pool_a,
+            BetSide::FighterB => state.pool_b,
+            BetSide::Draw => state.pool_draw,
+        };
+        let fee = state
+            .total_pool
+            .checked_mul(state.config.fee_bps as i128)
+            .and_then(|value| value.checked_div(10_000))
+            .ok_or(ContractError::InsufficientAmount)?;
+        let net_pool = state
+            .total_pool
+            .checked_sub(fee)
+            .ok_or(ContractError::InsufficientAmount)?;
+        let treasury: Address = env
+            .storage()
+            .persistent()
+            .get(&TREASURY)
+            .ok_or(ContractError::Unauthorized)?;
+
+        let mut prepared_bets: Vec<(Address, Vec<BetRecord>)> = Vec::new(&env);
+        let mut receipts = Vec::new(&env);
+        let mut total_fee = 0i128;
+        for bettor in bettors.iter() {
+            let bets = Self::load_bets(&env, &bettor);
+            if bets.is_empty() {
+                return Err(ContractError::NoBetsFound);
+            }
+
+            let mut bettor_stake = 0i128;
+            for bet in bets.iter() {
+                if bet.side == winning_side && !bet.claimed {
+                    bettor_stake = bettor_stake
+                        .checked_add(bet.amount)
+                        .ok_or(ContractError::InsufficientAmount)?;
+                }
+            }
+            if bettor_stake == 0 {
+                return Err(ContractError::AlreadyClaimed);
+            }
+
+            let (payout, bettor_fee) = Self::calculate_claim_amounts(
+                bettor_stake,
+                winning_pool,
+                state.total_pool,
+                net_pool,
+                state.config.fee_bps as i128,
+            )?;
+            total_fee = total_fee
+                .checked_add(bettor_fee)
+                .ok_or(ContractError::InsufficientAmount)?;
+
+            let mut updated_bets = Vec::new(&env);
+            for mut bet in bets.iter() {
+                if bet.side == winning_side && !bet.claimed {
+                    bet.claimed = true;
+                }
+                updated_bets.push_back(bet);
+            }
+            prepared_bets.push_back((bettor.clone(), updated_bets));
+            receipts.push_back(ClaimReceipt {
+                bettor: bettor.clone(),
+                market_id: state.market_id,
+                amount_won: payout,
+                fee_deducted: bettor_fee,
+                claimed_at: env.ledger().timestamp(),
+            });
+        }
+
+        // Complete all state effects before invoking the token contract.
+        env.storage().instance().set(&CLAIMING, &true);
+        for (bettor, updated_bets) in prepared_bets.iter() {
+            Self::save_bets(&env, &bettor, &updated_bets);
+        }
+        Self::extend_market_ttl(&env);
+
+        let token_client = token::Client::new(&env, &token);
+        if total_fee > 0 {
+            token_client.transfer(&env.current_contract_address(), &treasury, &total_fee);
+        }
+        for receipt in receipts.iter() {
+            if receipt.amount_won > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &receipt.bettor,
+                    &receipt.amount_won,
+                );
+            }
+        }
+
+        env.storage().instance().set(&CLAIMING, &false);
+        Self::extend_market_ttl(&env);
+
+        for receipt in receipts.iter() {
+            boxmeout_shared::emit_winnings_claimed(&env, state.market_id, receipt);
+        }
+        Ok(receipts)
     }
 
     // =========================================================================

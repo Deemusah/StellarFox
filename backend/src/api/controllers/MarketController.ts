@@ -211,6 +211,31 @@ export async function getMarketStats(req: Request, res: Response, next: NextFunc
   }
 }
 
+const probabilityHistoryQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+}).refine(({ from, to }) => !from || !to || from <= to, {
+  message: 'from must be before or equal to to',
+});
+
+/**
+ * GET /api/markets/:market_id/probabilities
+ *
+ * Returns sampled implied probabilities in chronological order.
+ */
+export async function getMarketProbabilityHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const marketIdParam = req.params.market_id;
+    const marketId = Array.isArray(marketIdParam) ? marketIdParam[0] : marketIdParam;
+    if (!marketId) throw AppError.badRequest('market_id is required');
+    const filters = probabilityHistoryQuerySchema.parse(req.query);
+    const snapshots = await MarketService.getProbabilityHistory(marketId, filters);
+    res.status(200).json({ market_id: marketId, snapshots });
 export async function getMarketAnalytics(_req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const analytics = await MarketService.getMarketAnalytics();

@@ -34,6 +34,16 @@ export const getMarketGroup3ParamsSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, 'id must contain only alphanumeric, hyphen, or underscore characters'),
 });
 
+export const marketAuditTrailQuerySchema = z.object({
+  page: z.coerce.number().int().min(1, 'page must be an integer >= 1').default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1, 'limit must be >= 1')
+    .max(100, 'limit cannot exceed 100')
+    .default(20),
+});
+
 export const createMarketGroup3BodySchema = z.object({
   fighter_a: z
     .string({ required_error: 'fighter_a is required' })
@@ -94,5 +104,6 @@ export const lockMarketGroup3BodySchema = z.object({
 
 export type ListMarketsGroup3Query = z.infer<typeof listMarketsGroup3QuerySchema>;
 export type GetMarketGroup3Params = z.infer<typeof getMarketGroup3ParamsSchema>;
+export type MarketAuditTrailQuery = z.infer<typeof marketAuditTrailQuerySchema>;
 export type CreateMarketGroup3Body = z.infer<typeof createMarketGroup3BodySchema>;
 export type LockMarketGroup3Body = z.infer<typeof lockMarketGroup3BodySchema>;

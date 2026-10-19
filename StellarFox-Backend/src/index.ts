@@ -19,6 +19,7 @@ import { pool } from "./config/db";
 import { redis } from "./config/redis";
 import authRouter from "./routes/auth.routes";
 import marketRouter from "./routes/market.routes";
+import marketGroup3Router from "./routes/marketGroup3.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
@@ -31,6 +32,7 @@ import retentionConfigRouter from "./routes/retentionConfig.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
@@ -126,6 +128,7 @@ app.use(
 
 app.use("/auth", authRouter);
 app.use("/api/markets", marketRouter);
+app.use("/api/v2/markets", marketGroup3Router);
 app.use("/api/governance", governanceRouter);
 app.use("/api/engagement", engagementRouter);
 app.use("/api/feedback", feedbackRouter);
@@ -183,6 +186,7 @@ const server = app.listen(PORT, () => {
   }
   startAutoResolutionCron();
   startAutoLockCron();
+  startProbabilitySnapshotCron();
   startCleanupCron();
 });
 

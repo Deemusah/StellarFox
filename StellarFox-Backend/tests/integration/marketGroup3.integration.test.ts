@@ -144,6 +144,59 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
     });
   });
 
+  describe('GET /api/v2/markets/:id/audit', () => {
+    it('returns paginated audit events in timestamp order to admins', async () => {
+      const auditEvent = {
+        id: '3',
+        market_id: 'mkt_123',
+        operation: 'UPDATE',
+        before_snapshot: { status: 'open' },
+        after_snapshot: { status: 'locked' },
+        changed_fields: ['status'],
+        occurred_at: '2026-10-18T10:00:00.000Z',
+      };
+      (pool.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [{ count: '3' }] })
+        .mockResolvedValueOnce({ rows: [auditEvent] });
+
+      const res = await request(app)
+        .get('/api/v2/markets/mkt_123/audit')
+        .query({ page: 2, limit: 1 })
+        .set('Authorization', `Bearer ${validAdminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.events).toEqual([auditEvent]);
+      expect(res.body.data.pagination).toEqual({
+        page: 2,
+        limit: 1,
+        total: 3,
+        totalPages: 3,
+      });
+      expect(pool.query).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('ORDER BY occurred_at ASC, id ASC'),
+        ['mkt_123', 1, 1]
+      );
+    });
+
+    it('requires admin authentication', async () => {
+      const res = await request(app).get('/api/v2/markets/mkt_123/audit');
+
+      expect(res.status).toBe(401);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid pagination parameters', async () => {
+      const res = await request(app)
+        .get('/api/v2/markets/mkt_123/audit')
+        .query({ page: 0, limit: 101 })
+        .set('Authorization', `Bearer ${validAdminToken}`);
+
+      expect(res.status).toBe(422);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /api/v2/markets', () => {
     const validMarketPayload = {
       fighter_a: 'Canelo Alvarez',
