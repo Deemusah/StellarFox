@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
-export type SortOption = 'newest' | 'ending_soon' | 'biggest_pool';
+export type SortOption = 'date_asc' | 'date_desc' | 'pool_desc';
 
 const WEIGHT_CLASSES = [
   '',
@@ -24,6 +24,14 @@ const WEIGHT_CLASSES = [
   'Minimumweight',
 ] as const;
 
+const CATEGORY_LABELS = {
+  COMBAT_SPORTS: 'Combat Sports',
+  BOXING: 'Boxing',
+  MMA: 'MMA',
+  KICKBOXING: 'Kickboxing',
+  OTHER: 'Other',
+} as const;
+
 const STATUS_TABS = [
   { label: 'All',      value: '' },
   { label: 'Open',     value: 'open' },
@@ -32,9 +40,9 @@ const STATUS_TABS = [
 ] as const;
 
 const SORT_OPTIONS: { label: string; value: SortOption }[] = [
-  { label: 'Newest',       value: 'newest' },
-  { label: 'Ending Soon',  value: 'ending_soon' },
-  { label: 'Biggest Pool', value: 'biggest_pool' },
+  { label: 'Newest',       value: 'date_desc' },
+  { label: 'Ending Soon',  value: 'date_asc' },
+  { label: 'Biggest Pool', value: 'pool_desc' },
 ];
 
 export interface MarketFilterValues {
@@ -42,6 +50,7 @@ export interface MarketFilterValues {
   search: string;
   sort: SortOption;
   weightClass: string;
+  category: string;
 }
 
 interface MarketFiltersProps {
@@ -53,9 +62,11 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   const searchParams = useSearchParams();
 
   const status     = searchParams.get('status')      ?? '';
-  const sort       = (searchParams.get('sort')       ?? 'newest') as SortOption;
+  const sort       = (searchParams.get('sort')       ?? 'date_desc') as SortOption;
   const searchParam = searchParams.get('search')     ?? '';
+  const weightClass = searchParams.get('weight_class') ?? '';
   const weightClass = searchParams.get('weightClass') ?? '';
+  const category = searchParams.get('category') ?? '';
 
   const [searchInput, setSearchInput] = useState(searchParam);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,8 +101,8 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   };
 
   useEffect(() => {
-    onChange?.({ status, search: searchParam, sort, weightClass });
-  }, [status, searchParam, sort, weightClass, onChange]);
+    onChange?.({ status, search: searchParam, sort, weightClass, category });
+  }, [status, searchParam, sort, weightClass, category, onChange]);
 
   const handleStatusKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const tabs = Array.from(statusTabsRef.current?.querySelectorAll('[role="tab"]') ?? []) as HTMLElement[];
@@ -112,17 +123,30 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   };
 
   return (
-    <div className="flex flex-wrap gap-3 items-center">
+    <div className="grid grid-cols-2 items-center gap-3 sm:flex sm:flex-wrap">
       {/* Weight class dropdown */}
       <select
         value={weightClass}
-        onChange={(e) => setParam({ weightClass: e.target.value || null })}
+        onChange={(e) => setParam({ weight_class: e.target.value || null })}
         aria-label="Filter by weight class"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500 sm:w-auto"
+        className="min-h-[44px] bg-gray-800 text-gray-200 text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
       >
         <option value="">All Weight Classes</option>
         {WEIGHT_CLASSES.filter(Boolean).map((w) => (
           <option key={w} value={w}>{w}</option>
+        ))}
+      </select>
+
+      <select
+        value={category}
+        onChange={(e) => setParam({ category: e.target.value || null })}
+        aria-label="Filter by market category"
+        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+      >
+        <option value="">All Categories</option>
+        {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
+          <option key={value} value={value}>{label}</option>
         ))}
       </select>
 
@@ -131,7 +155,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         ref={statusTabsRef}
         role="tablist"
         aria-label="Filter by market status"
-        className="flex rounded-lg overflow-hidden border border-gray-700"
+        className="col-span-2 flex max-w-full overflow-x-auto rounded-lg border border-gray-700 sm:col-span-1"
         onKeyDown={handleStatusKeyDown}
       >
         {STATUS_TABS.map((tab) => (
@@ -142,7 +166,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
             aria-label={`Filter by ${tab.label} status`}
             tabIndex={status === tab.value ? 0 : -1}
             onClick={() => setParam({ status: tab.value || null })}
-            className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-inset ${
+            className={`shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-inset ${
               status === tab.value
                 ? 'bg-amber-500 text-black'
                 : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
@@ -160,7 +184,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         onChange={(e) => handleSearchChange(e.target.value)}
         placeholder="Search fighters…"
         aria-label="Search fighters"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 w-48"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 sm:w-48"
       />
 
       {/* Sort dropdown */}
@@ -168,7 +192,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         value={sort}
         onChange={(e) => setParam({ sort: e.target.value })}
         aria-label="Sort markets"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500 ml-auto"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500 sm:ml-auto sm:w-auto"
       >
         {SORT_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>

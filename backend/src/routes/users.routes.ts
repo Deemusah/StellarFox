@@ -92,6 +92,29 @@ router.patch(
 
 /**
  * @swagger
+ * /api/users/me/export:
+ *   get:
+ *     summary: Export the authenticated user's personal data as JSON
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Downloadable JSON export of the account and user-linked records
+ *       401:
+ *         description: Unauthorized
+ *       429:
+ *         description: Export rate limit exceeded
+ */
+router.get(
+  '/me/export',
+  requireAuth,
+  exportRateLimiter,
+  usersController.exportMyData.bind(usersController),
+);
+
+/**
+ * @swagger
  * /api/users:
  *   get:
  *     summary: List all users (admin only)

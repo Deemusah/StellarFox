@@ -304,4 +304,46 @@ describe('Oracle Resolution Pipeline', () => {
     expect(marketRow.status).toBe('resolved');
     expect(marketRow.outcome).toBe(ORACLE_OUTCOME);
   });
+
+  it('rolls back the market and oracle report when a settlement write fails', async () => {
+    await pool.query(
+      `INSERT INTO bets (market_id, bettor_address, side, amount, tx_hash)
+       VALUES ($1, 'GBETTOR', $2, 1000, $3)`,
+      [MARKET_ID, ORACLE_OUTCOME, `tx-bet-${randomUUID()}`],
+    );
+    await pool.query(
+      `ALTER TABLE notification_jobs
+       ADD CONSTRAINT reject_market_resolution_for_test
+       CHECK (job_type <> 'market_resolved') NOT VALID`,
+    );
+
+    const resolvedEvent: RawStellarEvent = {
+      contract_address: CONTRACT_ADDRESS,
+      event_type: 'market_resolved',
+      topics: [],
+      data: JSON.stringify({
+        market_id: MARKET_ID,
+        match_id: MATCH_ID,
+        outcome: ORACLE_OUTCOME,
+        oracle_address: 'GTEST',
+      }),
+      ledger_sequence: 3001,
+      ledger_close_time: FROZEN_ISO,
+      tx_hash: `tx-rollback-${randomUUID()}`,
+    };
+
+    try {
+      await expect(handleMarketResolved(resolvedEvent)).rejects.toThrow();
+
+      const [market] = await q<{ status: string; outcome: string | null; resolved_at: Date | null }>(
+        'SELECT status, outcome, resolved_at FROM markets WHERE market_id = $1',
+        [MARKET_ID],
+      );
+      expect(market).toEqual({ status: 'open', outcome: null, resolved_at: null });
+      expect(await q('SELECT id FROM oracle_reports WHERE tx_hash = $1', [resolvedEvent.tx_hash])).toHaveLength(0);
+      expect(await q('SELECT id FROM notification_jobs WHERE market_id = $1', [MARKET_ID])).toHaveLength(0);
+    } finally {
+      await pool.query('ALTER TABLE notification_jobs DROP CONSTRAINT IF EXISTS reject_market_resolution_for_test');
+    }
+  });
 });

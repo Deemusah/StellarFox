@@ -103,25 +103,43 @@ export function BetHistoryTable({ bets, markets, onClaim, onRefund }: BetHistory
       <div className="overflow-x-auto -mx-4 px-4">
         <table className="min-w-full text-sm text-left text-gray-300">
           <thead>
-            <tr className="text-xs text-gray-500 border-b border-gray-800">
-              <th className="pb-2 pr-4 whitespace-nowrap">Market</th>
-              <th className="pb-2 pr-4 whitespace-nowrap">My Bet</th>
+            <tr className="text-xs text-gray-400 border-b border-gray-800">
+              <th className="pb-2 pr-4 whitespace-nowrap text-left">Market</th>
+              <th className="pb-2 pr-4 whitespace-nowrap text-left">My Bet</th>
               <th
-                className="pb-2 pr-4 whitespace-nowrap cursor-pointer hover:text-gray-300 select-none"
+                className="pb-2 pr-4 whitespace-nowrap cursor-pointer hover:text-gray-300 select-none text-left"
                 onClick={() => handleSort('amount_xlm')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSort('amount_xlm');
+                  }
+                }}
+                aria-sort={sortKey === 'amount_xlm' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
               >
                 Amount<SortIcon col="amount_xlm" />
               </th>
-              <th className="pb-2 pr-4 whitespace-nowrap">Odds</th>
-              <th className="pb-2 pr-4 whitespace-nowrap">Status</th>
-              <th className="pb-2 pr-4 whitespace-nowrap">Payout</th>
+              <th className="pb-2 pr-4 whitespace-nowrap text-left">Odds</th>
+              <th className="pb-2 pr-4 whitespace-nowrap text-left">Status</th>
+              <th className="pb-2 pr-4 whitespace-nowrap text-left">Payout</th>
               <th
-                className="pb-2 pr-4 whitespace-nowrap cursor-pointer hover:text-gray-300 select-none"
+                className="pb-2 pr-4 whitespace-nowrap cursor-pointer hover:text-gray-300 select-none text-left"
                 onClick={() => handleSort('placed_at')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSort('placed_at');
+                  }
+                }}
+                aria-sort={sortKey === 'placed_at' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
               >
                 Date<SortIcon col="placed_at" />
               </th>
-              <th className="pb-2 whitespace-nowrap">Action</th>
+              <th className="pb-2 whitespace-nowrap text-left">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -210,13 +228,14 @@ export function BetHistoryTable({ bets, markets, onClaim, onRefund }: BetHistory
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-xs text-gray-400 pt-1">
-          <span>
+          <span aria-live="polite">
             {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length}
           </span>
           <div className="flex gap-1">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
+              aria-label={`Previous page (currently on page ${page} of ${totalPages})`}
               className="min-h-[32px] px-3 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               ←
@@ -224,6 +243,7 @@ export function BetHistoryTable({ bets, markets, onClaim, onRefund }: BetHistory
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
+              aria-label={`Next page (currently on page ${page} of ${totalPages})`}
               className="min-h-[32px] px-3 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               →

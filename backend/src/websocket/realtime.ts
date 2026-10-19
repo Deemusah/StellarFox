@@ -70,6 +70,8 @@ export type LeaderboardRankUpdateEvent = {
 type AuthMsg = { type: 'auth'; token: string };
 type SubscribeMsg =
   | { type: 'subscribe_activity'; marketId: string }
+  | { type: 'subscribe_market_update'; marketId: string }
+  | { type: 'unsubscribe_market_update'; marketId: string }
   | { type: 'subscribe_leaderboard'; leaderboardId?: string }
   | { type: 'unsubscribe_leaderboard'; leaderboardId?: string };
 
@@ -153,7 +155,11 @@ export class ActivityFeed {
   /** Per-socket set of named leaderboard IDs this socket has subscribed to. */
   private subscribedLeaderboards = new WeakMap<WebSocket, Set<string>>();
 
-  // ── Heartbeat / ping-pong ───────────────────────────────────────────────────
+  // ── Market update subscriptions (live market state changes) ─────────────────
+  /** marketId → set of sockets subscribed for real-time market_update events. */
+  private marketUpdateSubscriptions = new Map<string, Set<WebSocket>>();
+  /** Per-socket set of market IDs subscribed for market_update (dedup). */
+  private subscribedMarketUpdates = new WeakMap<WebSocket, Set<string>>();  // ── Heartbeat / ping-pong ───────────────────────────────────────────────────
   /** Per-socket count of consecutive missed heartbeats. */
   private missedHeartbeats = new WeakMap<WebSocket, number>();
   /** Server-wide heartbeat interval handle. */
@@ -343,6 +349,36 @@ export class ActivityFeed {
       }
       return;
     }
+
+    // ── Market update subscriptions (live market state changes) ─────────────
+    if (msg.type === 'subscribe_market_update' && typeof msg.marketId === 'string') {
+      let markets = this.subscribedMarketUpdates.get(ws);
+      if (!markets) {
+        markets = new Set<string>();
+        this.subscribedMarketUpdates.set(ws, markets);
+      }
+      if (markets.has(msg.marketId)) {
+        return; // already subscribed — drop duplicate
+      }
+      markets.add(msg.marketId);
+
+      if (!this.marketUpdateSubscriptions.has(msg.marketId)) {
+        this.marketUpdateSubscriptions.set(msg.marketId, new Set());
+      }
+      this.marketUpdateSubscriptions.get(msg.marketId)!.add(ws);
+
+      // Acknowledge the subscription
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'subscribed', channel: 'market_update', marketId: msg.marketId }));
+      }
+      return;
+    }
+
+    if (msg.type === 'unsubscribe_market_update' && typeof msg.marketId === 'string') {
+      this.marketUpdateSubscriptions.get(msg.marketId)?.delete(ws);
+      this.subscribedMarketUpdates.get(ws)?.delete(msg.marketId);
+      return;
+    }
   }
 
   private cleanupSocket(ws: WebSocket, ip?: string): void {
@@ -378,6 +414,14 @@ export class ActivityFeed {
       sockets.delete(ws);
       if (sockets.size === 0) {
         this.leaderboardSubscriptions.delete(leaderboardId);
+      }
+    }
+
+    // ── Market update subscriptions ───────────────────────────────────────
+    for (const [marketId, sockets] of this.marketUpdateSubscriptions.entries()) {
+      sockets.delete(ws);
+      if (sockets.size === 0) {
+        this.marketUpdateSubscriptions.delete(marketId);
       }
     }
 
@@ -448,6 +492,31 @@ export class ActivityFeed {
     }
   }
 
+  /**
+   * Broadcast a live market_update event (status change, odds shift, lock, etc.)
+   * to all clients subscribed to that market's update channel.
+   *
+   * @param marketId  The market whose state changed.
+   * @param eventType A descriptive label for the change (e.g. 'status_changed', 'odds_updated').
+   * @param data      Arbitrary payload describing the change.
+   */
+  publishMarketUpdate(marketId: string, eventType: string, data: Record<string, unknown>): void {
+    const sockets = this.marketUpdateSubscriptions.get(marketId);
+    if (!sockets?.size) return;
+
+    const payload = JSON.stringify({
+      type: 'market_update',
+      marketId,
+      eventType,
+      data,
+      timestamp: new Date().toISOString(),
+    });
+
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+    }
+  }
+
   close(): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -462,7 +531,7 @@ export class ActivityFeed {
   }
 
   getSubscriptionRoomCount(): number {
-    return this.subscriptions.size + this.leaderboardSubscriptions.size;
+    return this.subscriptions.size + this.leaderboardSubscriptions.size + this.marketUpdateSubscriptions.size;
   }
 
   getSubscriptionDistribution(): Record<string, number> {
@@ -472,6 +541,9 @@ export class ActivityFeed {
     }
     for (const [leaderboardId, sockets] of this.leaderboardSubscriptions.entries()) {
       dist[`leaderboard:${leaderboardId}`] = sockets.size;
+    }
+    for (const [marketId, sockets] of this.marketUpdateSubscriptions.entries()) {
+      dist[`market_update:${marketId}`] = sockets.size;
     }
     dist['leaderboard:global'] = this.globalLeaderboardSubs.size;
     return dist;

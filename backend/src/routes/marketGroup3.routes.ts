@@ -10,12 +10,16 @@ import {
   createMarketGroup3BodySchema,
   lockMarketGroup3ParamsSchema,
   lockMarketGroup3BodySchema,
+  marketAuditTrailQuerySchema,
 } from '../schemas/marketGroup3.schemas';
+import type { MarketAuditTrailQuery } from '../schemas/marketGroup3.schemas';
+import type { ListMarketsGroup3Query } from '../schemas/marketGroup3.schemas';
 import { validateQuery, validateParams, validateBody } from '../api/middleware/validate';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
 import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
+import { getMarketCategoryDescendants } from '../models/MarketCategory';
 
 const router = Router();
 
@@ -45,6 +49,7 @@ const createMarketLimiter = rateLimit({ windowMs: 60_000, max: 10, keyBy: 'ip' }
  *         name: category
  *         schema:
  *           type: string
+ *           enum: [BOXING, MMA, KICKBOXING, OTHER, COMBAT_SPORTS]
  *       - in: query
  *         name: search
  *         schema:
@@ -84,16 +89,7 @@ router.get(
   validateQuery(listMarketsGroup3QuerySchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const query = req.query as unknown as {
-        status?: string;
-        category?: string;
-        search?: string;
-        minPool?: number;
-        maxPool?: number;
-        sort?: string;
-        page: number;
-        limit: number;
-      };
+      const query = req.query as unknown as ListMarketsGroup3Query;
 
       const page = query.page || 1;
       const limit = query.limit || 20;
@@ -105,6 +101,11 @@ router.get(
       if (query.status) {
         values.push(query.status);
         whereClauses.push(`status = $${values.length}`);
+      }
+
+      if (query.category) {
+        values.push(getMarketCategoryDescendants(query.category));
+        whereClauses.push(`category = ANY($${values.length}::text[])`);
       }
 
       if (query.search) {
@@ -200,6 +201,84 @@ router.get(
 
 /**
  * @swagger
+ * /api/v2/markets/{id}/audit:
+ *   get:
+ *     summary: Retrieve the immutable audit history for a market (Admin only)
+ *     tags: [Market Group 3]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Market audit events ordered by timestamp and event ID
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  '/:id/audit',
+  requireAdminJwt,
+  validateParams(getMarketGroup3ParamsSchema),
+  validateQuery(marketAuditTrailQuerySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { page, limit } = req.query as unknown as MarketAuditTrailQuery;
+      const offset = (page - 1) * limit;
+      const marketFilter = '(market_id = $1 OR previous_market_id = $1)';
+      const countResult = await pool.query(
+        `SELECT COUNT(*) AS count FROM market_audit_log WHERE ${marketFilter}`,
+        [id]
+      );
+      const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+      const eventsResult = await pool.query(
+        `SELECT id, market_id, previous_market_id, operation, before_snapshot,
+                after_snapshot, changed_fields, actor_id, database_user,
+                application_name, transaction_id, occurred_at
+         FROM market_audit_log
+         WHERE ${marketFilter}
+         ORDER BY occurred_at ASC, id ASC
+         LIMIT $2 OFFSET $3`,
+        [id, limit, offset]
+      );
+
+      res.status(200).json({
+        success: true,
+        data: {
+          events: eventsResult.rows,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit) || 1,
+          },
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * @swagger
  * /api/v2/markets:
  *   post:
  *     summary: Create a new market (Admin only)
@@ -212,7 +291,7 @@ router.get(
  *         application/json:
  *           schema:
  *             type: object
- *             required: [fighter_a, fighter_b, weight_class, scheduled_at]
+ *             required: [fighter_a, fighter_b, category, weight_class, scheduled_at]
  *     responses:
  *       201:
  *         description: Market created successfully
@@ -234,6 +313,9 @@ router.post(
 
       const insertResult = await pool.query(
         `INSERT INTO markets (
+          market_id, contract_address, match_id, fighter_a, fighter_b, category,
+          weight_class, title_fight, venue, scheduled_at, fee_bps,
+          lock_before_secs, status
           market_id, contract_address, match_id, fighter_a, fighter_b,
           weight_class, title_fight, venue, scheduled_at, min_bet_amount,
           fee_bps, lock_before_secs, status
@@ -245,6 +327,7 @@ router.post(
           `match_${Date.now()}`,
           body.fighter_a,
           body.fighter_b,
+          body.category,
           body.weight_class,
           body.title_fight,
           body.venue,

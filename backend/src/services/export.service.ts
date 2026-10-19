@@ -368,3 +368,52 @@ export async function streamUserHistoryReport(
     }
   }
 }
+
+export async function buildUserDataExport(userId: string): Promise<Record<string, unknown>> {
+  const [account, sessions, disputes, shares, streaks, achievements, referrals, referralPayouts] =
+    await Promise.all([
+      pool.query(
+        `SELECT id, email, email_verified, two_factor_enabled, role, created_at, updated_at
+         FROM users WHERE id = $1`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT id, created_at, expires_at FROM user_sessions WHERE user_id = $1 ORDER BY created_at`,
+        [userId],
+      ),
+      pool.query('SELECT * FROM disputes WHERE user_id = $1 ORDER BY raised_at', [userId]),
+      pool.query('SELECT * FROM shares WHERE user_id = $1 ORDER BY created_at', [userId]),
+      pool.query('SELECT * FROM user_streaks WHERE user_id = $1', [userId]),
+      pool.query(
+        `SELECT ua.achievement_code, ua.awarded_at, a.name, a.description
+         FROM user_achievements ua
+         JOIN achievements a ON a.code = ua.achievement_code
+         WHERE ua.user_id = $1 ORDER BY ua.awarded_at`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT id, referrer_id, referred_id, status, bonus_rate_bps, created_at
+         FROM referrals WHERE referrer_id = $1 OR referred_id = $1 ORDER BY created_at`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT id, referrer_id, referred_id, tier, source_amount, payout_amount, status, created_at, paid_at
+         FROM referral_payouts WHERE referrer_id = $1 OR referred_id = $1 ORDER BY created_at`,
+        [userId],
+      ),
+    ]);
+
+  if (!account.rows[0]) throw new Error('User not found');
+
+  return {
+    exportedAt: new Date().toISOString(),
+    account: account.rows[0],
+    sessions: sessions.rows,
+    disputes: disputes.rows,
+    shares: shares.rows,
+    streaks: streaks.rows,
+    achievements: achievements.rows,
+    referrals: referrals.rows,
+    referralPayouts: referralPayouts.rows,
+  };
+}

@@ -82,6 +82,7 @@ impl Treasury {
         Ok(())
     }
 
+    /// Maps the ledger timestamp to a UTC-day bucket for daily withdrawal caps.
     fn day_bucket(env: &Env) -> u64 {
         env.ledger().timestamp() / 86400
     }
@@ -121,6 +122,7 @@ impl Treasury {
     /// Safety note: fee ledger totals, daily caps, and audit sequence IDs must never wrap.
     /// Every balance adjustment in Treasury uses checked arithmetic so near-boundary values
     /// fail with ContractError::InvalidAmount instead of silently corrupting state.
+    /// Adds a withdrawal to its day's token bucket and removes buckets older than one day.
     fn record_token_withdrawal(
         env: &Env,
         token: &Address,
@@ -148,6 +150,7 @@ impl Treasury {
         Ok(())
     }
 
+    /// Appends the next monotonic audit entry and emits its corresponding event.
     fn record_audit(
         env: &Env,
         action: AuditAction,
@@ -305,6 +308,7 @@ impl Treasury {
         Ok(())
     }
 
+    /// Returns whether `token` is currently whitelisted for treasury operations.
     pub fn is_token_supported(env: Env, token: Address) -> bool {
         let supported: Map<Address, bool> = env
             .storage()
@@ -314,6 +318,7 @@ impl Treasury {
         supported.get(token).unwrap_or(false)
     }
 
+    /// Returns all token addresses currently enabled for treasury operations.
     pub fn get_supported_tokens(env: Env) -> Vec<Address> {
         let supported: Map<Address, bool> = env
             .storage()
@@ -511,6 +516,13 @@ impl Treasury {
         Ok(amount)
     }
 
+    /// Sets the maximum amount allowed in one fee withdrawal.
+    ///
+    /// The configured limit must be at least the minimum withdrawal amount.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
+    /// - `BelowMinimum`: Limit is less than the minimum withdrawal
     pub fn set_withdrawal_limit(
         env: Env,
         admin: Address,
@@ -525,10 +537,16 @@ impl Treasury {
         Ok(())
     }
 
+    /// Returns the configured per-transaction withdrawal limit, or zero if unset.
     pub fn get_withdrawal_limit(env: Env) -> i128 {
         env.storage().persistent().get(&WITHDRAWAL_LIMIT).unwrap_or(0)
     }
 
+    /// Sets the daily withdrawal cap for a token; zero disables its token-specific cap.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
+    /// - `InvalidAmount`: `cap` is negative
     pub fn set_token_daily_cap(
         env: Env,
         admin: Address,
@@ -550,6 +568,7 @@ impl Treasury {
         Ok(())
     }
 
+    /// Returns the configured daily withdrawal cap for `token`, or zero if unset.
     pub fn get_token_daily_cap(env: Env, token: Address) -> i128 {
         let caps: Map<Address, i128> = env
             .storage()
@@ -559,11 +578,16 @@ impl Treasury {
         caps.get(token).unwrap_or(0)
     }
 
+    /// Returns the amount already withdrawn for `token` in the current UTC day bucket.
     pub fn get_token_daily_withdrawn(env: Env, token: Address) -> i128 {
         let bucket = Self::day_bucket(&env);
         Self::token_withdrawn_today(&env, &token, bucket)
     }
 
+    /// Pauses admin fee withdrawals and emergency drains without affecting deposits.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
     pub fn pause_withdrawals(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
@@ -571,6 +595,10 @@ impl Treasury {
         Ok(())
     }
 
+    /// Re-enables admin fee withdrawals and emergency drains.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
     pub fn unpause_withdrawals(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
@@ -578,10 +606,12 @@ impl Treasury {
         Ok(())
     }
 
+    /// Returns whether outgoing treasury withdrawals are paused.
     pub fn is_withdrawals_paused(env: Env) -> bool {
         env.storage().persistent().get(&WITHDRAWALS_PAUSED).unwrap_or(false)
     }
 
+    /// Returns the treasury's accumulated fee balance for `token`.
     pub fn get_accumulated_fees(env: Env, token: Address) -> i128 {
         let fees: Map<Address, i128> = env
             .storage()
@@ -591,10 +621,12 @@ impl Treasury {
         fees.get(token).unwrap_or(0)
     }
 
+    /// Returns the append-only audit records currently stored by the treasury.
     pub fn get_audit_log(env: Env) -> Vec<AuditEntry> {
         env.storage().persistent().get(&AUDIT_LOG).unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns the number of audit records currently stored.
     pub fn get_audit_log_len(env: Env) -> u64 {
         let log: Vec<AuditEntry> = env
             .storage()
@@ -604,10 +636,12 @@ impl Treasury {
         log.len() as u64
     }
 
+    /// Returns the audit record count; this is an alias for [`Self::get_audit_log_len`].
     pub fn get_audit_log_count(env: Env) -> u64 {
         Self::get_audit_log_len(env)
     }
 
+    /// Returns the audit record at zero-based `index`, or `None` if it is out of range.
     pub fn get_audit_entry(env: Env, index: u64) -> Option<AuditEntry> {
         let log: Vec<AuditEntry> = env
             .storage()
@@ -623,6 +657,13 @@ impl Treasury {
 
     // ── Dynamic Fee Tiers ─────────────────────────────────────────────────
 
+    /// Replaces the ordered fee schedule used by [`Self::calculate_fee`].
+    ///
+    /// Tiers are evaluated in order; each fee rate must be at most 10,000 basis points.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
+    /// - `InvalidAmount`: The list is empty or a fee rate exceeds 10,000 bps
     pub fn set_fee_tiers(
         env: Env,
         admin: Address,
@@ -651,6 +692,7 @@ impl Treasury {
         Ok(())
     }
 
+    /// Returns the current ordered fee schedule.
     pub fn get_fee_tiers(env: Env) -> Vec<FeeTier> {
         env.storage()
             .instance()
@@ -658,6 +700,9 @@ impl Treasury {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Calculates the fee for a bet using the first tier covering total market volume.
+    ///
+    /// The returned amount is rounded down to the nearest integer unit.
     pub fn calculate_fee(env: Env, market_total_volume: u64, bet_amount: u64) -> u64 {
         if bet_amount == 0 {
             return 0;
@@ -677,6 +722,7 @@ impl Treasury {
         ((bet_amount as u128 * rate_bps as u128) / 10_000) as u64
     }
 
+    /// Extends the TTL of the treasury's persistent configuration and accounting records.
     pub fn extend_ttl(env: Env) {
         env.storage().persistent().extend_ttl(&ADMIN, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&BET_TOKEN, 518_400, 518_400);
@@ -693,6 +739,10 @@ impl Treasury {
         env.storage().persistent().extend_ttl(&AUDIT_NEXT_ID, 518_400, 518_400);
     }
 
+    /// Upgrades the treasury contract to `new_wasm_hash`.
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the treasury admin
     pub fn upgrade(
         env: Env,
         admin: Address,

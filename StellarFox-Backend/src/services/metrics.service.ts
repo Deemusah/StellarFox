@@ -66,6 +66,11 @@ export const cronResetTokensDeleted = new Counter({
   help: 'Total expired password_reset_tokens rows deleted by cleanup cron',
 });
 
+export const cronPredictionsDeleted = new Counter({
+  name: 'cron_predictions_deleted_total',
+  help: 'Total expired prediction rows deleted by cleanup cron',
+});
+
 export const cronNotificationsSoftDeleted = new Counter({
   name: 'cron_notifications_soft_deleted_total',
   help: 'Total notification_jobs rows soft-deleted by cleanup cron',
@@ -80,5 +85,30 @@ export const cronBlockchainEventsDeleted = new Counter({
   name: 'cron_blockchain_events_deleted_total',
   help: 'Total processed blockchain_events rows deleted by cleanup cron',
 });
+
+export type MetricsExportFormat = 'json' | 'csv';
+
+function escapeCsv(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export async function exportMetrics(format: MetricsExportFormat): Promise<string> {
+  const metrics = await register.getMetricsAsJSON();
+  if (format === 'json') return JSON.stringify(metrics);
+
+  const rows = ['name,type,help,labels,value'];
+  for (const metric of metrics) {
+    for (const sample of metric.values) {
+      rows.push([
+        metric.name,
+        metric.type,
+        metric.help,
+        JSON.stringify(sample.labels),
+        String(sample.value),
+      ].map(escapeCsv).join(','));
+    }
+  }
+  return rows.join('\r\n');
+}
 
 export { register };

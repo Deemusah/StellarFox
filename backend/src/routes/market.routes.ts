@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import {
     listMarkets,
     listMarketsValidation,
@@ -8,14 +9,100 @@ import {
     getMarketOdds,
     streamMarketOdds,
     getMarketStats,
+    getMarketProbabilityHistory,
+    getMarketAnalytics,
+    getMarketRecommendations,
     getPlatformStats,
     resolveMarket,
     simulatePayout,
     simulatePayoutValidation,
+    searchSuggestions,
 } from '../api/controllers/MarketController';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
+import { requireAuth } from '../middleware/auth.middleware';
+import {
+    cacheMarket,
+    cacheMarketList,
+    cacheMarketStats,
+    cacheMiddleware,
+} from '../middleware/cache.middleware';
+import { invalidateMarket } from '../services/cache-invalidation.service';
 
 const router = Router();
+
+/**
+ * Inline route handler that invalidates market cache after a resolve operation.
+ * Runs after resolveMarket has already sent the response.
+ */
+async function invalidateMarketAfterResolve(
+    req: Request,
+    _res: Response,
+    next: NextFunction,
+): Promise<void> {
+    try {
+        await invalidateMarket(req.params.market_id);
+    } catch (err) {
+        // Non-fatal: log and continue — response was already sent by resolveMarket
+        next(err);
+        return;
+    }
+    next();
+}
+
+/**
+ * @swagger
+ * tags:
+ *   name: Markets
+ *   description: Prediction market endpoints
+ */
+
+/**
+ * @swagger
+ * /markets/search/suggestions:
+ *   get:
+ *     summary: Fighter name autocomplete suggestions
+ *     tags: [Markets]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 100
+ *         description: Partial fighter name to search for
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 8
+ *           minimum: 1
+ *           maximum: 20
+ *     responses:
+ *       200:
+ *         description: Matching fighter name suggestions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 suggestions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       market_id:
+ *                         type: string
+ *                       side:
+ *                         type: string
+ *                         enum: [a, b]
+ *       400:
+ *         description: Invalid query parameters
+ */
+// NOTE: this must be registered before /:market_id to avoid shadowing
+router.get('/search/suggestions', searchSuggestions);
 
 /**
  * @swagger
@@ -28,7 +115,7 @@ const router = Router();
  * @swagger
  * /markets:
  *   get:
- *     summary: List all markets (paginated)
+ *     summary: Search and list markets (paginated)
  *     tags: [Markets]
  *     parameters:
  *       - in: query
@@ -46,14 +133,89 @@ const router = Router();
  *         name: status
  *         schema:
  *           type: string
+ *           enum: [open, locked, resolved, cancelled, disputed]
+ *       - in: query
+ *         name: search
+ *         description: Full-text search across fighter names, weight class, and venue
+ *         schema:
+ *           type: string
+ *           maxLength: 200
+ *       - in: query
+ *         name: category
+ *         description: Market category, mapped to weight_class
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: weight_class
+ *         description: Legacy alias for category
+ *         deprecated: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: dateFrom
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [date_asc, date_desc, pool_desc]
+ *       - in: query
+ *         name: dateTo
+ *         schema:
+ *           type: string
+ *           format: date-time
  *           enum: [OPEN, LOCKED, RESOLVED, CANCELLED]
+ *       - in: query
+ *         name: category
+ *         description: Filter by a category or the COMBAT_SPORTS parent category.
+ *         schema:
+ *           type: string
+ *           enum: [BOXING, MMA, KICKBOXING, OTHER, COMBAT_SPORTS]
  *     responses:
  *       200:
  *         description: Paginated list of markets
  *       400:
  *         description: Invalid parameters (limit exceeds maximum of 200)
  */
-router.get('/', listMarketsValidation, listMarkets);
+router.get('/', listMarketsValidation, cacheMarketList(10), listMarkets);
+
+/**
+ * @swagger
+ * /markets/stats:
+ *   get:
+ *     summary: Get aggregated market statistics
+ *     tags: [Markets]
+ *     responses:
+ *       200:
+ *         description: Platform-wide market, volume, bettor, and category statistics
+ */
+router.get('/stats', getMarketAnalytics);
+
+/**
+ * @swagger
+ * /markets/recommendations:
+ *   get:
+ *     summary: Get personalized open-market recommendations
+ *     tags: [Markets]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Ranked open markets based on betting history and popularity
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/recommendations', requireAuth, getMarketRecommendations);
 
 /**
  * @swagger
@@ -73,7 +235,7 @@ router.get('/', listMarketsValidation, listMarkets);
  *       404:
  *         description: Market not found
  */
-router.get('/:market_id', getMarket);
+router.get('/:market_id', cacheMarket(30), getMarket);
 
 /**
  * @swagger
@@ -137,7 +299,11 @@ router.get('/:market_id/odds/stream', streamMarketOdds);
  *       200:
  *         description: Current odds
  */
-router.get('/:market_id/odds', getMarketOdds);
+router.get(
+    '/:market_id/odds',
+    cacheMiddleware((req) => `market:${req.params.market_id}:odds`, 5),
+    getMarketOdds,
+);
 
 /**
  * @swagger
@@ -155,7 +321,43 @@ router.get('/:market_id/odds', getMarketOdds);
  *       200:
  *         description: Market statistics
  */
-router.get('/:market_id/stats', getMarketStats);
+router.get('/:market_id/stats', cacheMarketStats(60), getMarketStats);
+
+/**
+ * @swagger
+ * /markets/{market_id}/probabilities:
+ *   get:
+ *     summary: Get historical implied probabilities for a market
+ *     tags: [Markets]
+ *     parameters:
+ *       - in: path
+ *         name: market_id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *           maximum: 1000
+ *     responses:
+ *       200:
+ *         description: Chronological probability snapshots
+ *       404:
+ *         description: Market not found
+ */
+router.get('/:market_id/probabilities', getMarketProbabilityHistory);
 
 /**
  * @swagger
@@ -219,6 +421,6 @@ router.get('/:market_id/simulate', simulatePayoutValidation, simulatePayout);
  *       404:
  *         description: Market not found
  */
-router.post('/:market_id/resolve', requireAdminJwt, resolveMarket);
+router.post('/:market_id/resolve', requireAdminJwt, resolveMarket, invalidateMarketAfterResolve);
 
 export default router;

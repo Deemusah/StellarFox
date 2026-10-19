@@ -30,6 +30,8 @@ const envSchema = z.object({
   ADMIN_PUBLIC_KEY: z.string().optional(),
   TREASURY_CONTRACT_ADDRESS: z.string().optional(),
   ORACLE_API_KEY: z.string().optional(),
+  ORACLE_UPDATE_LIMIT: z.coerce.number().int().positive().default(1),
+  ORACLE_UPDATE_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   ENABLE_SWAGGER: z.coerce.boolean().default(false),
   GENESIS_LEDGER: z.coerce.number().int().positive().default(100000),

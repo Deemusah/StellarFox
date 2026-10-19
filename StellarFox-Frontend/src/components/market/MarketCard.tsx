@@ -33,6 +33,9 @@ export function MarketCard({ market }: MarketCardProps): JSX.Element {
       {/* Badges */}
       <div className="flex flex-wrap items-center gap-2">
         <MarketStatusBadge status={market.status} />
+        <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded-full">
+          {market.category.replace(/_/g, ' ')}
+        </span>
         <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded-full">{market.weight_class}</span>
         {market.title_fight && (
           <span className="text-xs text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full">🏆 Title Fight</span>

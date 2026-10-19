@@ -56,6 +56,7 @@ const marketEvent = () =>
     match_id: 'fight-1',
     fighter_a: 'Ali',
     fighter_b: 'Frazier',
+    category: 'MMA',
     weight_class: 'heavyweight',
     title_fight: false,
     venue: 'MSG',
@@ -87,7 +88,20 @@ describe('handleMarketCreated', () => {
     expect(row.market_id).toBe(MARKET_ID);
     expect(row.fighter_a).toBe('Ali');
     expect(row.fighter_b).toBe('Frazier');
+    expect(row.category).toBe('MMA');
     expect(row.status).toBe('open');
+  });
+
+  it('uses OTHER for legacy events without a category', async () => {
+    const legacyEvent = marketEvent();
+    const eventData = JSON.parse(legacyEvent.data) as Record<string, unknown>;
+    delete eventData.category;
+    legacyEvent.data = JSON.stringify(eventData);
+
+    await handleMarketCreated(legacyEvent);
+    const [row] = await q('SELECT category FROM markets WHERE market_id = $1', [MARKET_ID]);
+
+    expect(row.category).toBe('OTHER');
   });
 
   it('is idempotent — duplicate event inserts no extra row', async () => {
