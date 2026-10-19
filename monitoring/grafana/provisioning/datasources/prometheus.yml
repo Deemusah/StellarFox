@@ -1,0 +1,36 @@
+# ============================================================
+# Grafana datasource provisioning — BANKERCHANGER
+# ============================================================
+#
+# Mounted read-only at /etc/grafana/provisioning/datasources by
+# `docker-compose.monitoring.yml`.
+#
+# The `uid` below is referenced by every panel in
+# monitoring/grafana/dashboards/*.json.
+# ============================================================
+
+apiVersion: 1
+
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    uid: bankerchanger-prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      # Required for Prometheus alerting rules to show up in the Grafana UI.
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 2.53.0
+      cacheLevel: High
+      incrementalQueryOverlapWindow: 10m
+      incrementalQueryMaxWindow: 60m

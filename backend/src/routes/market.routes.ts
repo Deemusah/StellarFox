@@ -12,10 +12,66 @@ import {
     resolveMarket,
     simulatePayout,
     simulatePayoutValidation,
+    searchSuggestions,
 } from '../api/controllers/MarketController';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
 
 const router = Router();
+
+/**
+ * @swagger
+ * tags:
+ *   name: Markets
+ *   description: Prediction market endpoints
+ */
+
+/**
+ * @swagger
+ * /markets/search/suggestions:
+ *   get:
+ *     summary: Fighter name autocomplete suggestions
+ *     tags: [Markets]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 100
+ *         description: Partial fighter name to search for
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 8
+ *           minimum: 1
+ *           maximum: 20
+ *     responses:
+ *       200:
+ *         description: Matching fighter name suggestions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 suggestions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       market_id:
+ *                         type: string
+ *                       side:
+ *                         type: string
+ *                         enum: [a, b]
+ *       400:
+ *         description: Invalid query parameters
+ */
+// NOTE: this must be registered before /:market_id to avoid shadowing
+router.get('/search/suggestions', searchSuggestions);
 
 /**
  * @swagger
