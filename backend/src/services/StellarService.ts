@@ -445,3 +445,69 @@ export interface RawStellarEvent {
   ledger_close_time: string;
   tx_hash: string;
 }
+
+// ─── Circuit-Breaker-Wrapped Exports ─────────────────────────────────────────
+//
+// Use these wrappers instead of calling invokeContract / readContractState
+// directly.  The circuit breaker opens after 5 consecutive failures and
+// re-probes after 30 s, preventing cascading failures when the Stellar RPC
+// or Horizon endpoint becomes unavailable.
+//
+// Named circuit breakers are singletons (see circuitBreaker.ts registry) so
+// the same state is shared across all callers in the process.
+
+import { getCircuitBreaker } from '../utils/circuitBreaker';
+
+const STELLAR_INVOKE_CB_OPTIONS = {
+  failureThreshold: 5,
+  resetTimeoutMs: 30_000,
+  callTimeoutMs: 45_000,  // give Stellar RPC time to confirm a transaction
+};
+
+const STELLAR_READ_CB_OPTIONS = {
+  failureThreshold: 10,
+  resetTimeoutMs: 15_000,
+  callTimeoutMs: 15_000,
+};
+
+/**
+ * Circuit-breaker-protected version of `invokeContract`.
+ * Falls back to CircuitBreakerError when the Stellar RPC is unhealthy.
+ */
+export async function invokeContractProtected(
+  contract_address: string,
+  method: string,
+  args: xdr.ScVal[],
+  source_keypair?: Keypair,
+): Promise<string> {
+  const cb = getCircuitBreaker('stellar-invoke', STELLAR_INVOKE_CB_OPTIONS);
+  return cb.execute(() => invokeContract(contract_address, method, args, source_keypair));
+}
+
+/**
+ * Circuit-breaker-protected version of `readContractState`.
+ * Falls back to CircuitBreakerError when the Stellar RPC is unhealthy.
+ */
+export async function readContractStateProtected<T>(
+  contract_address: string,
+  method: string,
+  args: xdr.ScVal[],
+): Promise<T> {
+  const cb = getCircuitBreaker('stellar-read', STELLAR_READ_CB_OPTIONS);
+  return cb.execute(() => readContractState<T>(contract_address, method, args));
+}
+
+/**
+ * Circuit-breaker-protected version of `fetchHistoricalEvents`.
+ */
+export async function fetchHistoricalEventsProtected(
+  fromLedger: number,
+  toLedger?: number,
+): ReturnType<typeof fetchHistoricalEvents> {
+  const cb = getCircuitBreaker('stellar-horizon', {
+    failureThreshold: 5,
+    resetTimeoutMs: 60_000,
+    callTimeoutMs: 60_000,
+  });
+  return cb.execute(() => fetchHistoricalEvents(fromLedger, toLedger));
+}

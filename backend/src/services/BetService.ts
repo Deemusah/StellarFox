@@ -8,7 +8,7 @@ import { pool } from '../config/db';
 import { cacheDelete, cacheDeletePattern } from './cache.service';
 import { AppError } from '../utils/AppError';
 import { Address, xdr } from '@stellar/stellar-sdk';
-import { invokeContract } from './StellarService';
+import { invokeContractProtected } from './StellarService';
 
 export interface BetWithMarket extends Bet {
   market_id: string;
@@ -297,7 +297,7 @@ export async function claimWinnings(
   const bettorScVal = Address.fromString(bettor_address).toScVal();
   const tokenScVal = Address.fromString(token_address).toScVal();
 
-  const tx_hash = await invokeContract(contract_address, 'claim_winnings', [bettorScVal, tokenScVal]);
+  const tx_hash = await invokeContractProtected(contract_address, 'claim_winnings', [bettorScVal, tokenScVal]);
 
   return tx_hash;
 }
@@ -334,7 +334,7 @@ export async function claimRefund(
   const bettorScVal = Address.fromString(bettor_address).toScVal();
   const tokenScVal = Address.fromString(token_address).toScVal();
 
-  const tx_hash = await invokeContract(contract_address, 'claim_refund', [bettorScVal, tokenScVal]);
+  const tx_hash = await invokeContractProtected(contract_address, 'claim_refund', [bettorScVal, tokenScVal]);
 
   return tx_hash;
 }
@@ -399,7 +399,7 @@ export async function processMarketRefunds(
       try {
         const bettorScVal = Address.fromString(bettor_address).toScVal();
         const tokenScVal = Address.fromString(token_address).toScVal();
-        await invokeContract(contract_address, 'claim_refund', [bettorScVal, tokenScVal]);
+        await invokeContractProtected(contract_address, 'claim_refund', [bettorScVal, tokenScVal]);
         result.submitted++;
       } catch {
         // Expected — claim_refund requires bettor.require_auth();

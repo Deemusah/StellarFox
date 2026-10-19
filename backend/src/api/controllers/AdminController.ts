@@ -9,6 +9,7 @@ import { AppError } from '../../utils/AppError';
 import * as StellarService from '../../services/StellarService';
 import * as BetService from '../../services/BetService';
 import * as OracleService from '../../oracle/OracleService';
+import { db, bulkPauseMarkets, bulkCancelMarkets, updateMarketStatus, bulkUpdateMarkets, type BulkUpdateItem } from '../../services/MarketService';
 import { db, bulkPauseMarkets, bulkCancelMarkets, updateMarketStatus, softDeleteMarket } from '../../services/MarketService';
 import { pool } from '../../config/db';
 
@@ -44,6 +45,33 @@ export async function bulkCancel(req: Request, res: Response): Promise<void> {
     throw new AppError(400, 'reason is required');
   }
   res.json(await bulkCancelMarkets(marketIds, reason));
+}
+
+/**
+ * POST /api/admin/markets/bulk-update
+ * Body: { updates: Array<{ market_id, fee_bps?, lock_before_secs?, scheduled_at?, venue?, status? }> }
+ *
+ * Updates up to 50 markets in a single request. Supported fields:
+ *   - fee_bps: platform fee in basis points (0–1000)
+ *   - lock_before_secs: seconds before scheduled_at to stop accepting bets (60–86400)
+ *   - scheduled_at: ISO-8601 datetime string
+ *   - venue: fight venue name
+ *   - status: open | locked | cancelled (validated against state machine)
+ *
+ * Each market is processed independently — failures do not abort others.
+ * Response: { succeeded: [{id, updated}], failed: [{id, reason}] }
+ */
+export async function bulkUpdate(req: Request, res: Response): Promise<void> {
+  const { updates } = req.body as { updates: BulkUpdateItem[] };
+
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new AppError(400, 'updates must be a non-empty array');
+  }
+  if (updates.length > MAX_BULK) {
+    throw new AppError(400, `Maximum ${MAX_BULK} markets per request`);
+  }
+
+  res.json(await bulkUpdateMarkets(updates));
 }
 
 const VALID_OUTCOMES = ['fighter_a', 'fighter_b', 'draw', 'no_contest'] as const;
@@ -97,7 +125,7 @@ export async function flagDispute(
     throw new AppError(500, 'ADMIN_ADDRESS is not configured on this server');
   }
 
-  const txHash = await StellarService.invokeContract(
+  const txHash = await StellarService.invokeContractProtected(
     market.contract_address,
     'dispute_market',
     [nativeToScVal(adminAddress), nativeToScVal(reason)],
@@ -304,7 +332,7 @@ export async function cancelMarket(
     throw new AppError(500, 'ADMIN_ADDRESS is not configured on this server');
   }
 
-  const txHash = await StellarService.invokeContract(
+  const txHash = await StellarService.invokeContractProtected(
     market.contract_address,
     'cancel_market',
     [nativeToScVal(adminAddress), nativeToScVal(reason)],

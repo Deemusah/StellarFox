@@ -687,9 +687,9 @@ export async function getMarketOdds(market_id: string): Promise<MarketOdds> {
   let pool_a: bigint, pool_b: bigint, pool_draw: bigint, total_pool: bigint;
 
   if (isStale) {
-    // Fallback to on-chain read
-    // Assume readContractState returns { pool_a: string, pool_b: string, pool_draw: string, total_pool: string }
-    const onChainData = await StellarService.readContractState(market.contract_address, 'get_pools', []) as { pool_a: string; pool_b: string; pool_draw: string; total_pool: string };
+    // Fallback to on-chain read — protected by circuit breaker
+    // Assume readContractStateProtected returns { pool_a: string, pool_b: string, pool_draw: string, total_pool: string }
+    const onChainData = await StellarService.readContractStateProtected(market.contract_address, 'get_pools', []) as { pool_a: string; pool_b: string; pool_draw: string; total_pool: string };
     pool_a = BigInt(onChainData.pool_a);
     pool_b = BigInt(onChainData.pool_b);
     pool_draw = BigInt(onChainData.pool_draw);
@@ -1225,6 +1225,101 @@ export async function getPlatformStats(): Promise<PlatformStats> {
 export interface BulkResult {
   succeeded: string[];
   failed: { id: string; reason: string }[];
+}
+
+export interface MarketUpdateFields {
+  fee_bps?: number;
+  lock_before_secs?: number;
+  scheduled_at?: string;
+  venue?: string;
+  status?: 'open' | 'locked' | 'cancelled';
+}
+
+export interface BulkUpdateItem extends MarketUpdateFields {
+  market_id: string;
+}
+
+export interface BulkUpdateResult {
+  succeeded: { id: string; updated: string[] }[];
+  failed: { id: string; reason: string }[];
+}
+
+/**
+ * Updates up to 50 markets in a single admin action.
+ * Supported fields: fee_bps, lock_before_secs, scheduled_at, venue, status.
+ * Status transitions are validated against the state machine.
+ * Each market is processed independently — failures do not abort others.
+ */
+export async function bulkUpdateMarkets(
+  updates: BulkUpdateItem[],
+): Promise<BulkUpdateResult> {
+  const result: BulkUpdateResult = { succeeded: [], failed: [] };
+
+  for (const update of updates) {
+    const { market_id, status, ...fields } = update;
+
+    try {
+      const market = await db().findMarketById(market_id);
+      if (!market) {
+        result.failed.push({ id: market_id, reason: 'Market not found' });
+        continue;
+      }
+
+      // Validate status transition if status is being updated
+      if (status !== undefined) {
+        validateStatusTransition(market.status, status);
+      }
+
+      // Build dynamic SET clause
+      const setClauses: string[] = ['updated_at = NOW()'];
+      const values: unknown[] = [];
+
+      if (fields.fee_bps !== undefined) {
+        values.push(fields.fee_bps);
+        setClauses.push(`fee_bps = $${values.length}`);
+      }
+      if (fields.lock_before_secs !== undefined) {
+        values.push(fields.lock_before_secs);
+        setClauses.push(`lock_before_secs = $${values.length}`);
+      }
+      if (fields.scheduled_at !== undefined) {
+        values.push(new Date(fields.scheduled_at));
+        setClauses.push(`scheduled_at = $${values.length}`);
+      }
+      if (fields.venue !== undefined) {
+        values.push(fields.venue.trim());
+        setClauses.push(`venue = $${values.length}`);
+      }
+      if (status !== undefined) {
+        values.push(status);
+        setClauses.push(`status = $${values.length}`);
+      }
+
+      values.push(market_id);
+      const sql = `UPDATE markets SET ${setClauses.join(', ')} WHERE market_id = $${values.length} RETURNING *`;
+
+      const { rows } = await pool.query(sql, values);
+      if (rows.length === 0) {
+        result.failed.push({ id: market_id, reason: 'Update had no effect' });
+        continue;
+      }
+
+      await invalidateMarketCache(market_id);
+
+      const updatedFields = [
+        ...Object.keys(fields).filter((k) => (fields as Record<string, unknown>)[k] !== undefined),
+        ...(status !== undefined ? ['status'] : []),
+      ];
+      result.succeeded.push({ id: market_id, updated: updatedFields });
+    } catch (err) {
+      result.failed.push({
+        id: market_id,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return result;
 }
 
 /**

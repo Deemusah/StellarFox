@@ -54,12 +54,17 @@ import { register } from "./services/metrics.service";
 import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
+import { installQueryMonitor } from "./middleware/query-monitoring";
+import { getCircuitBreakerStatus } from "./utils/circuitBreaker";
 
 // Initialise Sentry before any other code (captures unhandled rejections/exceptions)
 initSentry(env.SENTRY_DSN, env.NODE_ENV);
 
 // Wire default production DbAdapter for MarketService
 setDbAdapter(defaultDbAdapter);
+
+// Install query monitoring on the pg pool — tracks slow queries and exports Prometheus metrics
+installQueryMonitor(pool);
 
 const app = express();
 
@@ -130,6 +135,7 @@ app.get("/health", async (_req, res) => {
         idleCount: pool.idleCount,
         waitingCount: pool.waitingCount,
       },
+      circuitBreakers: getCircuitBreakerStatus(),
       ...(wsMetrics !== null && { websocket: wsMetrics }),
     });
   } catch {
