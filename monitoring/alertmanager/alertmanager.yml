@@ -1,0 +1,58 @@
+# ============================================================
+# Alertmanager configuration — BANKERCHANGER
+# ============================================================
+#
+# Mounted read-only at /etc/alertmanager/alertmanager.yml by
+# `docker-compose.monitoring.yml`.
+#
+# Receivers intentionally ship without integrations so no credentials live
+# in the repository. Add a Slack / PagerDuty / webhook receiver when you
+# wire up real delivery (see docs/observability.md#alertmanager).
+#
+# Alertmanager UI: http://localhost:9093
+# ============================================================
+
+global:
+  # How long to wait for an alert to be resolved before notifying.
+  resolve_timeout: 5m
+
+route:
+  # Group related alerts together so one incident produces one notification.
+  group_by: ['alertname', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: default
+  routes:
+    # Critical alerts skip the 30s group_wait — page immediately.
+    - receiver: critical
+      matchers:
+        - severity = "critical"
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Everything tagged as a backend concern.
+    - receiver: backend-team
+      matchers:
+        - service = "backend"
+      group_wait: 1m
+      repeat_interval: 6h
+
+# A critical alert silences the matching warning so responders are not
+# paged twice for the same root cause.
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname', 'service']
+
+receivers:
+  # Default sink — alerts are still visible in the Alertmanager UI.
+  - name: default
+
+  # Paging sink for user-facing incidents.
+  - name: critical
+
+  # Ticket sink for backend-only degradations.
+  - name: backend-team

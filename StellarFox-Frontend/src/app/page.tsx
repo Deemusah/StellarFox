@@ -1,6 +1,7 @@
 // ============================================================
 // BANKERCHANGER — Home Page (/)
 // Market discovery with division categories, filters, sorting, and pagination.
+// Lists markets with category filters, sorting, and pagination.
 // ============================================================
 
 'use client';
@@ -12,6 +13,7 @@ import { MarketCard } from '../components/market/MarketCard';
 import { MarketCardSkeleton } from '../components/market/MarketCardSkeleton';
 import { StatsBanner } from '../components/ui/StatsBanner';
 import { MarketFilters } from '../components/market/MarketFilters';
+import { MARKET_CATEGORY_FILTERS } from '../services/api';
 
 const LIMIT = 12;
 const DIVISION_CATEGORIES = [
@@ -28,6 +30,10 @@ export default function HomePage(): JSX.Element {
 
   const weightClass = searchParams.get('weight_class') ?? '';
   const status = searchParams.get('status') ?? '';
+  const weightClass = searchParams.get('weight_class') ?? 'All Weight Classes';
+  const categoryParam = searchParams.get('category');
+  const category = MARKET_CATEGORY_FILTERS.find((value) => value === categoryParam);
+  const status = searchParams.get('status') ?? 'All';
   const sort = searchParams.get('sort') ?? 'date_desc';
   const page = Number(searchParams.get('page') ?? '1');
 
@@ -51,6 +57,9 @@ export default function HomePage(): JSX.Element {
       weight_class: weightClass || undefined,
       status: status || undefined,
       search: searchParams.get('search') || undefined,
+      weight_class: weightClass === 'All Weight Classes' ? undefined : weightClass,
+      category,
+      status: status === 'All' ? undefined : status.toLowerCase(),
       sort: sort as 'date_asc' | 'date_desc' | 'pool_desc',
     },
     { page, limit: LIMIT },
@@ -64,6 +73,7 @@ export default function HomePage(): JSX.Element {
       <div>
         <h1 className="text-2xl font-black text-white">BANKERCHANGER</h1>
         <p className="mt-1 text-sm text-gray-400">Decentralized boxing prediction markets on Stellar</p>
+        <p className="text-gray-400 text-sm mt-1">Decentralized combat sports prediction markets on Stellar</p>
       </div>
 
       <StatsBanner />

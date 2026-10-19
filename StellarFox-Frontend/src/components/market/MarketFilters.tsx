@@ -24,6 +24,14 @@ const WEIGHT_CLASSES = [
   'Minimumweight',
 ] as const;
 
+const CATEGORY_LABELS = {
+  COMBAT_SPORTS: 'Combat Sports',
+  BOXING: 'Boxing',
+  MMA: 'MMA',
+  KICKBOXING: 'Kickboxing',
+  OTHER: 'Other',
+} as const;
+
 const STATUS_TABS = [
   { label: 'All',      value: '' },
   { label: 'Open',     value: 'open' },
@@ -42,6 +50,7 @@ export interface MarketFilterValues {
   search: string;
   sort: SortOption;
   weightClass: string;
+  category: string;
 }
 
 interface MarketFiltersProps {
@@ -56,6 +65,8 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   const sort       = (searchParams.get('sort')       ?? 'date_desc') as SortOption;
   const searchParam = searchParams.get('search')     ?? '';
   const weightClass = searchParams.get('weight_class') ?? '';
+  const weightClass = searchParams.get('weightClass') ?? '';
+  const category = searchParams.get('category') ?? '';
 
   const [searchInput, setSearchInput] = useState(searchParam);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,8 +101,8 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   };
 
   useEffect(() => {
-    onChange?.({ status, search: searchParam, sort, weightClass });
-  }, [status, searchParam, sort, weightClass, onChange]);
+    onChange?.({ status, search: searchParam, sort, weightClass, category });
+  }, [status, searchParam, sort, weightClass, category, onChange]);
 
   const handleStatusKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const tabs = Array.from(statusTabsRef.current?.querySelectorAll('[role="tab"]') ?? []) as HTMLElement[];
@@ -119,10 +130,23 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         onChange={(e) => setParam({ weight_class: e.target.value || null })}
         aria-label="Filter by weight class"
         className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500 sm:w-auto"
+        className="min-h-[44px] bg-gray-800 text-gray-200 text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
       >
         <option value="">All Weight Classes</option>
         {WEIGHT_CLASSES.filter(Boolean).map((w) => (
           <option key={w} value={w}>{w}</option>
+        ))}
+      </select>
+
+      <select
+        value={category}
+        onChange={(e) => setParam({ category: e.target.value || null })}
+        aria-label="Filter by market category"
+        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+      >
+        <option value="">All Categories</option>
+        {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
+          <option key={value} value={value}>{label}</option>
         ))}
       </select>
 

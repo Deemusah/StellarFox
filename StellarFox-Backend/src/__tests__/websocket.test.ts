@@ -100,6 +100,50 @@ describe('WebSocket security — ActivityFeed', () => {
     ws.close();
   }, 5000);
 
+  it('includes a Retry-After hint on the 429 rate limit response', async () => {
+    const ws = await connect(port);
+    await authenticate(ws);
+
+    // Exceed the per-client message rate limit (20/sec)
+    for (let i = 0; i < 30; i++) {
+      ws.send(JSON.stringify({ type: 'subscribe_activity', marketId: `retry-market-${i}` }));
+    }
+
+    const msgs = await collectMessages(ws, 1, 1500).catch(() => []);
+    const rateLimitFrame = (msgs as Array<{ code?: number; retryAfter?: number }>).find(
+      (m) => m.code === 429,
+    );
+    expect(rateLimitFrame).toBeDefined();
+    expect(typeof rateLimitFrame?.retryAfter).toBe('number');
+    expect(rateLimitFrame?.retryAfter).toBeGreaterThan(0);
+
+    ws.close();
+  }, 5000);
+
+  it('enforces the rate limit per client, not globally', async () => {
+    const flooder = await connect(port);
+    await authenticate(flooder);
+
+    // Flood from the first client to trip its limit
+    for (let i = 0; i < 30; i++) {
+      flooder.send(JSON.stringify({ type: 'subscribe_activity', marketId: `flood-${i}` }));
+    }
+    await new Promise((r) => setTimeout(r, 50));
+
+    // A second, independent client should still be able to subscribe normally
+    const healthy = await connect(port);
+    await authenticate(healthy);
+    const MARKET_ID = 'per-client-market-001';
+    healthy.send(JSON.stringify({ type: 'subscribe_activity', marketId: MARKET_ID }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const dist = feed.getSubscriptionDistribution();
+    expect(dist[`market:${MARKET_ID}`]).toBeGreaterThanOrEqual(1);
+
+    flooder.close();
+    healthy.close();
+  }, 5000);
+
   // ── Duplicate subscription deduplication ──────────────────────────────────
 
   it('does not double-add the same market subscription (deduplication)', async () => {
