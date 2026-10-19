@@ -324,6 +324,29 @@ paths:
             text/plain:
               schema: { type: string }
 
+  /metrics/export:
+    get:
+      summary: Export application metrics
+      operationId: exportMetrics
+      tags: [System]
+      parameters:
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: Download metrics in JSON or CSV format
+          content:
+            application/json:
+              schema: { type: array, items: { type: object } }
+            text/csv:
+              schema: { type: string }
+        '400':
+          description: Unsupported export format
+
   # ---------------------------------------------------------------------------
   # Auth
   # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolutio
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
-import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
+import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
 
@@ -59,6 +59,18 @@ if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
 }
 
 // Prometheus metrics endpoint (internal only — no auth required)
+app.get("/metrics/export", async (req, res) => {
+  const format = String(req.query.format ?? "json").toLowerCase();
+  if (format !== "json" && format !== "csv") {
+    return res.status(400).json({ error: "format must be json or csv" });
+  }
+
+  const body = await exportMetrics(format);
+  res.set("Content-Type", format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="metrics.${format}"`);
+  res.send(body);
+});
+
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());

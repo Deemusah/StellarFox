@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MarketSearchAutocomplete } from './MarketSearchAutocomplete';
 
+export type SortOption = 'date_asc' | 'date_desc' | 'pool_desc';
 export type SortOption = 'newest' | 'ending_soon' | 'biggest_pool';
 import { useEffect, useRef, useState } from 'react';
 
@@ -41,6 +42,7 @@ const STATUS_TABS = [
   { label: 'Resolved', value: 'resolved' },
 ] as const;
 
+const SORT_OPTIONS: { label: string; value: SortOption }[] = [
 const SORT_OPTIONS = [
   { label: 'Newest',       value: 'date_desc' },
   { label: 'Ending Soon',  value: 'date_asc' },
@@ -66,8 +68,9 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
   const searchParams = useSearchParams();
 
   const status     = searchParams.get('status')      ?? '';
-  const sort       = (searchParams.get('sort')       ?? 'newest') as SortOption;
+  const sort       = (searchParams.get('sort')       ?? 'date_desc') as SortOption;
   const searchParam = searchParams.get('search')     ?? '';
+  const weightClass = searchParams.get('weight_class') ?? '';
   const weightClass = searchParams.get('weightClass') ?? '';
   const category = searchParams.get('category') ?? '';
 
@@ -143,13 +146,15 @@ export function MarketFilters({
   };
 
   return (
-    <div className="flex flex-wrap gap-3 items-center">
+    <div className="grid grid-cols-2 items-center gap-3 sm:flex sm:flex-wrap">
       {/* Weight class dropdown */}
       <select
+        value={weightClass}
+        onChange={(e) => setParam({ weight_class: e.target.value || null })}
         value={weightClass === 'All Weight Classes' ? '' : weightClass}
         onChange={(e) => onWeightClassChange(e.target.value)}
         aria-label="Filter by weight class"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500 sm:w-auto"
       >
         <option value="">All Weight Classes</option>
         {WEIGHT_CLASSES.filter(Boolean).map((w) => (
@@ -175,7 +180,7 @@ export function MarketFilters({
         id="market-status-filter"
         role="tablist"
         aria-label="Filter by market status"
-        className="flex rounded-lg overflow-hidden border border-gray-700"
+        className="col-span-2 flex max-w-full overflow-x-auto rounded-lg border border-gray-700 sm:col-span-1"
         onKeyDown={handleStatusKeyDown}
       >
         {STATUS_TABS.map((tab) => (
@@ -184,6 +189,10 @@ export function MarketFilters({
             role="tab"
             aria-selected={status.toLowerCase() === (tab.value || 'all')}
             aria-label={`Filter by ${tab.label} status`}
+            tabIndex={status === tab.value ? 0 : -1}
+            onClick={() => setParam({ status: tab.value || null })}
+            className={`shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-inset ${
+              status === tab.value
             tabIndex={status.toLowerCase() === (tab.value || 'all') ? 0 : -1}
             onClick={() => onStatusChange(tab.label)}
             className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-inset ${
@@ -206,6 +215,8 @@ export function MarketFilters({
         value={searchInput}
         onCommit={handleSearchChange}
         placeholder="Search fighters…"
+        aria-label="Search fighters"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 sm:w-48"
       />
 
       {/* Sort dropdown */}
@@ -213,7 +224,7 @@ export function MarketFilters({
         value={sort}
         onChange={(e) => onSortChange(e.target.value)}
         aria-label="Sort markets"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500 ml-auto"
+        className="min-h-[44px] w-full min-w-0 rounded-lg bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500 sm:ml-auto sm:w-auto"
       >
         {SORT_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
