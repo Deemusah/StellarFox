@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS markets (
   pool_b           NUMERIC     NOT NULL DEFAULT 0,
   pool_draw        NUMERIC     NOT NULL DEFAULT 0,
   total_pool       NUMERIC     NOT NULL DEFAULT 0,
+  min_bet_amount   NUMERIC     NOT NULL DEFAULT 1000000,
   fee_bps          INTEGER     NOT NULL DEFAULT 200,
   resolved_at      TIMESTAMPTZ,
   oracle_used      TEXT,

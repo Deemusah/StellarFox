@@ -236,6 +236,9 @@ router.post(
           market_id, contract_address, match_id, fighter_a, fighter_b, category,
           weight_class, title_fight, venue, scheduled_at, fee_bps,
           lock_before_secs, status
+          market_id, contract_address, match_id, fighter_a, fighter_b,
+          weight_class, title_fight, venue, scheduled_at, min_bet_amount,
+          fee_bps, lock_before_secs, status
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'open')
         RETURNING *`,
         [
@@ -249,6 +252,7 @@ router.post(
           body.title_fight,
           body.venue,
           body.scheduled_at,
+          body.min_bet_amount,
           body.fee_bps,
           body.lock_before_secs,
         ]

@@ -151,6 +151,7 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
       category: 'BOXING',
       weight_class: 'Super Middleweight',
       scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+      min_bet_amount: 1_000_000,
       fee_bps: 250,
       lock_before_secs: 1800,
     };
@@ -194,6 +195,15 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
         .post('/api/v2/markets')
         .set('Authorization', `Bearer ${validAdminToken}`)
         .send({ ...validMarketPayload, fee_bps: 1500 });
+
+      expect(res.status).toBe(422);
+    });
+
+    it('rejects min_bet_amount below 1 with 422', async () => {
+      const res = await request(app)
+        .post('/api/v2/markets')
+        .set('Authorization', `Bearer ${validAdminToken}`)
+        .send({ ...validMarketPayload, min_bet_amount: 0 });
 
       expect(res.status).toBe(422);
     });

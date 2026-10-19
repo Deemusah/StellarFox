@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import {
     listMarkets,
     listMarketsValidation,
@@ -12,10 +13,92 @@ import {
     resolveMarket,
     simulatePayout,
     simulatePayoutValidation,
+    searchSuggestions,
 } from '../api/controllers/MarketController';
 import { requireAdminJwt } from '../middleware/requireAdminJwt.middleware';
+import {
+    cacheMarket,
+    cacheMarketList,
+    cacheMarketStats,
+    cacheMiddleware,
+} from '../middleware/cache.middleware';
+import { invalidateMarket } from '../services/cache-invalidation.service';
 
 const router = Router();
+
+/**
+ * Inline route handler that invalidates market cache after a resolve operation.
+ * Runs after resolveMarket has already sent the response.
+ */
+async function invalidateMarketAfterResolve(
+    req: Request,
+    _res: Response,
+    next: NextFunction,
+): Promise<void> {
+    try {
+        await invalidateMarket(req.params.market_id);
+    } catch (err) {
+        // Non-fatal: log and continue — response was already sent by resolveMarket
+        next(err);
+        return;
+    }
+    next();
+}
+
+/**
+ * @swagger
+ * tags:
+ *   name: Markets
+ *   description: Prediction market endpoints
+ */
+
+/**
+ * @swagger
+ * /markets/search/suggestions:
+ *   get:
+ *     summary: Fighter name autocomplete suggestions
+ *     tags: [Markets]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 100
+ *         description: Partial fighter name to search for
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 8
+ *           minimum: 1
+ *           maximum: 20
+ *     responses:
+ *       200:
+ *         description: Matching fighter name suggestions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 suggestions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       market_id:
+ *                         type: string
+ *                       side:
+ *                         type: string
+ *                         enum: [a, b]
+ *       400:
+ *         description: Invalid query parameters
+ */
+// NOTE: this must be registered before /:market_id to avoid shadowing
+router.get('/search/suggestions', searchSuggestions);
 
 /**
  * @swagger
@@ -59,7 +142,7 @@ const router = Router();
  *       400:
  *         description: Invalid parameters (limit exceeds maximum of 200)
  */
-router.get('/', listMarketsValidation, listMarkets);
+router.get('/', listMarketsValidation, cacheMarketList(10), listMarkets);
 
 /**
  * @swagger
@@ -79,7 +162,7 @@ router.get('/', listMarketsValidation, listMarkets);
  *       404:
  *         description: Market not found
  */
-router.get('/:market_id', getMarket);
+router.get('/:market_id', cacheMarket(30), getMarket);
 
 /**
  * @swagger
@@ -143,7 +226,11 @@ router.get('/:market_id/odds/stream', streamMarketOdds);
  *       200:
  *         description: Current odds
  */
-router.get('/:market_id/odds', getMarketOdds);
+router.get(
+    '/:market_id/odds',
+    cacheMiddleware((req) => `market:${req.params.market_id}:odds`, 5),
+    getMarketOdds,
+);
 
 /**
  * @swagger
@@ -161,7 +248,7 @@ router.get('/:market_id/odds', getMarketOdds);
  *       200:
  *         description: Market statistics
  */
-router.get('/:market_id/stats', getMarketStats);
+router.get('/:market_id/stats', cacheMarketStats(60), getMarketStats);
 
 /**
  * @swagger
@@ -225,6 +312,6 @@ router.get('/:market_id/simulate', simulatePayoutValidation, simulatePayout);
  *       404:
  *         description: Market not found
  */
-router.post('/:market_id/resolve', requireAdminJwt, resolveMarket);
+router.post('/:market_id/resolve', requireAdminJwt, resolveMarket, invalidateMarketAfterResolve);
 
 export default router;

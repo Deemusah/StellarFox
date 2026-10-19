@@ -59,6 +59,12 @@ export const createMarketGroup3BodySchema = z.object({
   scheduled_at: z
     .string({ required_error: 'scheduled_at is required' })
     .datetime({ message: 'scheduled_at must be a valid ISO-8601 datetime string' }),
+  min_bet_amount: z
+    .number()
+    .int('min_bet_amount must be an integer')
+    .min(1, 'min_bet_amount must be at least 1 stroop')
+    .optional()
+    .default(1_000_000),
   fee_bps: z
     .number()
     .int('fee_bps must be an integer')

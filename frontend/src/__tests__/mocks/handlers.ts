@@ -99,6 +99,30 @@ export const handlers = [
     return HttpResponse.json(response);
   }),
 
+  // GET /api/markets/search/suggestions
+  http.get(`${API_BASE}/api/markets/search/suggestions`, ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get('q') ?? '').toLowerCase();
+    const limit = parseInt(url.searchParams.get('limit') ?? '8');
+
+    if (!q) {
+      return HttpResponse.json({ errors: [{ field: 'q', message: 'q must be at least 1 character' }] }, { status: 400 });
+    }
+
+    const suggestions: { name: string; market_id: string; side: 'a' | 'b' }[] = [];
+    for (const market of mockMarkets) {
+      if (suggestions.length >= limit) break;
+      if (market.fighter_a.toLowerCase().includes(q)) {
+        suggestions.push({ name: market.fighter_a, market_id: market.market_id, side: 'a' });
+      }
+      if (suggestions.length < limit && market.fighter_b.toLowerCase().includes(q)) {
+        suggestions.push({ name: market.fighter_b, market_id: market.market_id, side: 'b' });
+      }
+    }
+
+    return HttpResponse.json({ suggestions });
+  }),
+
   // GET /api/markets/:market_id
   http.get(`${API_BASE}/api/markets/:market_id`, ({ params }) => {
     const { market_id } = params;
@@ -119,7 +143,6 @@ export const handlers = [
  * MSW server for Node (used in Jest tests)
  */
 export const server = setupServer(...handlers);
-
 /**
  * Test market with 'open' status for polling tests
  */

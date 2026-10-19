@@ -1,0 +1,65 @@
+# ============================================================
+# Prometheus configuration — BANKERCHANGER
+# ============================================================
+#
+# Scrape targets, evaluates the bundled alerting / recording rules and
+# forwards firing alerts to Alertmanager.
+#
+# The paths below match the read-only bind mounts declared in
+# `docker-compose.monitoring.yml`:
+#
+#   ./monitoring/prometheus/prometheus.yml -> /etc/prometheus/prometheus.yml
+#   ./monitoring/prometheus/rules/*.yml   -> /etc/prometheus/rules/*.yml
+#
+# Local usage (from the repository root):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Prometheus UI: http://localhost:9090
+# ============================================================
+
+global:
+  # Scrape every target 4 times per minute — matches the 15s
+  # scrape_interval and the default Node.js exposition refresh rate.
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  # Re-evaluate alerting / recording rules every 15s.
+  evaluation_interval: 15s
+  external_labels:
+    monitor: bankerchanger
+    env: local
+
+# Alerting + recording rules shipped with the repository.
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+
+# Route firing alerts to Alertmanager.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'alertmanager:9093'
+      timeout: 10s
+
+scrape_configs:
+  # ── Prometheus itself ──────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+          - 'localhost:9090'
+        labels:
+          service: prometheus
+
+  # ── BANKERCHANGER backend API ───────────────────────────────────
+  # `metrics_path` must stay in sync with the route registered in
+  # `backend/src/index.ts` (asserted by backend/tests/monitoring).
+  - job_name: 'bankerchanger-backend'
+    metrics_path: /metrics
+    scheme: http
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - 'backend:3001'
+        labels:
+          service: backend

@@ -380,6 +380,77 @@ export async function invalidateMarketCache(market_id: string): Promise<void> {
   await cache.del(`market:${market_id}:stats`);
 }
 
+// ---------------------------------------------------------------------------
+// Autocomplete suggestions
+// ---------------------------------------------------------------------------
+
+export interface FighterSuggestion {
+  name: string;
+  market_id: string;
+  side: 'a' | 'b';
+}
+
+/**
+ * Returns up to `limit` distinct fighter names that ILIKE-match the query.
+ *
+ * When a real DB is available it runs a direct parameterised query.
+ * When a mock DbAdapter is injected (tests) it scans the adapter's findMarkets result.
+ *
+ * Results are cached for 10 seconds (suggestions are cheap but called on every keystroke).
+ */
+export async function getFighterSuggestions(
+  query: string,
+  limit = 8,
+): Promise<FighterSuggestion[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const cacheKey = `suggestions:${trimmed.toLowerCase()}:${limit}`;
+  const cached = await cache.get<FighterSuggestion[]>(cacheKey);
+  if (cached) return cached;
+
+  let suggestions: FighterSuggestion[];
+
+  if (_db) {
+    // Mock-adapter path: scan all markets and filter in-process
+    const markets = await db().findMarkets();
+    const lower = trimmed.toLowerCase();
+    const seen = new Set<string>();
+    suggestions = [];
+
+    for (const market of markets) {
+      if (suggestions.length >= limit) break;
+      if (market.fighter_a.toLowerCase().includes(lower) && !seen.has(market.fighter_a)) {
+        seen.add(market.fighter_a);
+        suggestions.push({ name: market.fighter_a, market_id: String(market.market_id), side: 'a' });
+      }
+      if (suggestions.length < limit && market.fighter_b.toLowerCase().includes(lower) && !seen.has(market.fighter_b)) {
+        seen.add(market.fighter_b);
+        suggestions.push({ name: market.fighter_b, market_id: String(market.market_id), side: 'b' });
+      }
+    }
+  } else {
+    // Real DB path: use UNION to query both fighter columns efficiently
+    const { rows } = await pool.query<{ name: string; market_id: string; side: 'a' | 'b' }>(
+      `SELECT fighter_a AS name, market_id::text AS market_id, 'a'::text AS side
+         FROM markets
+        WHERE fighter_a ILIKE $1
+       UNION
+       SELECT fighter_b AS name, market_id::text AS market_id, 'b'::text AS side
+         FROM markets
+        WHERE fighter_b ILIKE $1
+        LIMIT $2`,
+      [`%${trimmed}%`, limit],
+    );
+    suggestions = rows;
+  }
+
+  await cache.set(cacheKey, suggestions, 10);
+  return suggestions;
+}
+
+
+
 /**
  * Returns a single market by its on-chain market_id string, enriched with
  * live odds from getMarketOdds().
