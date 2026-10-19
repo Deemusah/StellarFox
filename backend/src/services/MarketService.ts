@@ -88,6 +88,7 @@ export interface DbAdapter {
   findBetsByAddress(bettor_address: string): Promise<Bet[]>;
   findBetsByMarket(market_id: string, bettor_address?: string): Promise<Bet[]>;
   updateMarketStatus(market_id: string, status: string): Promise<void>;
+  softDeleteMarket?(market_id: string, deleted_by: string): Promise<boolean>;
 }
 
 export const defaultDbAdapter: DbAdapter = {
@@ -121,7 +122,8 @@ export const defaultDbAdapter: DbAdapter = {
       whereClauses.push(`scheduled_at <= $${values.length}`);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    whereClauses.unshift('deleted_at IS NULL');
+    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
     const orderBySql =
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -143,7 +145,7 @@ export const defaultDbAdapter: DbAdapter = {
 
   async findMarketById(market_id: string): Promise<Market | null> {
     const { rows } = await pool.query(
-      'SELECT * FROM markets WHERE market_id = $1',
+      'SELECT * FROM markets WHERE market_id = $1 AND deleted_at IS NULL',
       [market_id],
     );
     if (rows.length === 0) return null;
@@ -171,14 +173,16 @@ export const defaultDbAdapter: DbAdapter = {
 
   async findBetsByMarket(market_id: string, bettor_address?: string): Promise<Bet[]> {
     const values: unknown[] = [market_id];
-    let sql = 'SELECT * FROM bets WHERE market_id = $1';
+    let sql = `SELECT b.* FROM bets b
+               JOIN markets m ON m.market_id = b.market_id
+               WHERE b.market_id = $1 AND m.deleted_at IS NULL`;
 
     if (bettor_address) {
       values.push(bettor_address);
-      sql += ` AND bettor_address = $${values.length}`;
+      sql += ` AND b.bettor_address = $${values.length}`;
     }
 
-    sql += ' ORDER BY placed_at DESC';
+    sql += ' ORDER BY b.placed_at DESC';
 
     const { rows } = await pool.query(sql, values);
     return rows.map((row) => ({
@@ -193,6 +197,14 @@ export const defaultDbAdapter: DbAdapter = {
       'UPDATE markets SET status = $1, updated_at = NOW() WHERE market_id = $2',
       [status, market_id],
     );
+  },
+
+  async softDeleteMarket(market_id: string, deleted_by: string): Promise<boolean> {
+    const result = await pool.query(
+      'UPDATE markets SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW() WHERE market_id = $1 AND deleted_at IS NULL',
+      [market_id, deleted_by],
+    );
+    return (result.rowCount ?? 0) > 0;
   },
 };
 
@@ -219,6 +231,15 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
   validateStatusTransition(market.status, newStatus);
   await db().updateMarketStatus(market_id, newStatus);
   await invalidateMarketCache(market_id);
+}
+
+export async function softDeleteMarket(market_id: string, deleted_by = 'system'): Promise<void> {
+  const adapter = db();
+  if (!adapter.softDeleteMarket) throw new AppError(501, 'Market deletion is not supported');
+  const deleted = await adapter.softDeleteMarket(market_id, deleted_by);
+  if (!deleted) throw AppError.notFound(`Market not found: ${market_id}`);
+  await invalidateMarketCache(market_id);
+  await cache.del('platform:stats');
 }
 
 export interface MarketFilters {
@@ -504,7 +525,8 @@ export async function getMarkets(
       whereClauses.push(`scheduled_at <= $${values.length}`);
     }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    whereClauses.unshift('deleted_at IS NULL');
+    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
     const orderBySql = 
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -877,14 +899,16 @@ export async function getBetsByMarket(
   }
 
   const values: unknown[] = [market_id];
-  let sql = 'SELECT * FROM bets WHERE market_id = $1';
+  let sql = `SELECT b.* FROM bets b
+             JOIN markets m ON m.market_id = b.market_id
+             WHERE b.market_id = $1 AND m.deleted_at IS NULL`;
 
   if (bettor_address) {
     values.push(bettor_address);
-    sql += ` AND bettor_address = $${values.length}`;
+    sql += ` AND b.bettor_address = $${values.length}`;
   }
 
-  sql += ' ORDER BY placed_at DESC';
+  sql += ' ORDER BY b.placed_at DESC';
 
   const { rows } = await pool.query(sql, values);
   return rows.map((row) => ({
@@ -1175,7 +1199,7 @@ export async function getPlatformStats(): Promise<PlatformStats> {
   }
 
   const marketsResult = await pool.query(
-    "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as active, SUM(total_pool) as volume FROM markets"
+    "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as active, SUM(total_pool) as volume FROM markets WHERE deleted_at IS NULL"
   );
 
   const betsResult = await pool.query('SELECT COUNT(*) as total FROM bets');

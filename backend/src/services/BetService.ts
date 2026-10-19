@@ -204,7 +204,7 @@ export async function calculateProjectedPayout(
 
   // Fetch market
   const marketResult = await pool.query(
-    'SELECT * FROM markets WHERE market_id = $1',
+    'SELECT * FROM markets WHERE market_id = $1 AND deleted_at IS NULL',
     [market_id],
   );
 

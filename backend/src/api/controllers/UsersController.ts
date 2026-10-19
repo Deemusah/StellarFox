@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { StrKey } from '@stellar/stellar-sdk';
 import { UserService } from '../../services/user.service.js';
-import { streamUserHistoryReport } from '../../services/export.service.js';
+import { buildUserDataExport, streamUserHistoryReport } from '../../services/export.service.js';
 import { AuthenticatedRequest } from '../../types/auth.types.js';
 import { UserTier } from '@prisma/client';
 import { logger } from '../../utils/logger.js';
@@ -9,6 +9,23 @@ import { logger } from '../../utils/logger.js';
 const userService = new UserService();
 
 export class UsersController {
+  async exportMyData(req: Request & { userId?: string }, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ success: false, message: 'Unauthorized' });
+      }
+      const data = await buildUserDataExport(req.userId);
+      res.setHeader('Content-Disposition', 'attachment; filename="my-data.json"');
+      return res.status(200).json(data);
+    } catch (error: any) {
+      if (error.message === 'User not found') {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      logger.error('UsersController.exportMyData error', { error });
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
   /**
    * GET /api/users/:id — public; returns public profile
    */

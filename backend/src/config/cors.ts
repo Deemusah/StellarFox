@@ -48,6 +48,7 @@ export function createCorsMiddleware() {
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['X-API-Version'],
     exposedHeaders: [
       'RateLimit-Limit',
       'RateLimit-Remaining',

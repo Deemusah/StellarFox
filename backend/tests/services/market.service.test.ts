@@ -1,5 +1,5 @@
 import * as MarketServiceModule from '../../src/services/MarketService';
-import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout } from '../../src/services/MarketService';
+import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout, softDeleteMarket } from '../../src/services/MarketService';
 import { AppError } from '../../src/utils/AppError';
 import type { Market } from '../../src/models/Market';
 import type { Bet } from '../../src/models/Bet';
@@ -77,6 +77,34 @@ describe('MarketService', () => {
     const result = await getMarkets();
     expect(result.total).toBe(2);
     expect(result.markets).toHaveLength(2);
+  });
+
+  it('softDeleteMarket() delegates to the adapter and invalidates caches', async () => {
+    const softDelete = jest.fn().mockResolvedValue(true);
+    setDbAdapter({
+      findMarkets: jest.fn(),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+      softDeleteMarket: softDelete,
+    });
+
+    await expect(softDeleteMarket('mkt-1')).resolves.toBeUndefined();
+    expect(softDelete).toHaveBeenCalledWith('mkt-1', 'system');
+  });
+
+  it('softDeleteMarket() returns not found when the market is already deleted', async () => {
+    setDbAdapter({
+      findMarkets: jest.fn(),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+      softDeleteMarket: jest.fn().mockResolvedValue(false),
+    });
+
+    await expect(softDeleteMarket('mkt-1')).rejects.toMatchObject({ statusCode: 404 });
   });
 
   // 2 ─────────────────────────────────────────────────────────────────────────

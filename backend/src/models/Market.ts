@@ -38,6 +38,8 @@ export interface Market {
   oracle_used: 'primary' | 'fallback' | 'admin' | null;
   created_at: Date;
   updated_at: Date;
+  deleted_at?: Date | null;
+  deleted_by?: string | null;
   /** Stellar ledger sequence at which this market was created */
   ledger_sequence: number;
 }
