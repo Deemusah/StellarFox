@@ -24,6 +24,7 @@
     "test": "jest --passWithNoTests",
     "test:integration": "jest --passWithNoTests --testPathPatterns=tests/integration",
     "test:e2e": "jest --passWithNoTests --runInBand --testPathPatterns=tests/e2e",
+    "test:rbac": "jest --passWithNoTests --testPathPatterns=tests/rbac"
     "loadtest": "k6 run load-tests/scenarios.js",
     "loadtest:smoke": "k6 run --vus 1 --duration 10s load-tests/scenarios.js",
     "loadtest:report": "k6 run --summary-export load-tests/results/summary.json load-tests/scenarios.js",
