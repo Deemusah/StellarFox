@@ -25,6 +25,7 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   const method = req.method;
   const path = req.path;
+  const requestId = (req as Request & { requestId?: string }).requestId;
 
   // Read or generate correlation ID
   const correlationId =
@@ -59,6 +60,8 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
       statusCode,
       responseTime: `${responseTime}ms`,
       ip,
+      ...(requestId && { requestId }),
+      ...(isSensitive && { body }),
       ...(sanitizedQuery && { query: sanitizedQuery }),
       body,
       ...(displayAuthHeader && { authorization: displayAuthHeader }),
