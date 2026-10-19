@@ -23,7 +23,15 @@
     "openapi:postman": "node scripts/generate-postman.js",
     "test": "jest --passWithNoTests",
     "test:integration": "jest --passWithNoTests --testPathPatterns=tests/integration",
-    "test:e2e": "jest --passWithNoTests --runInBand --testPathPatterns=tests/e2e"
+    "test:e2e": "jest --passWithNoTests --runInBand --testPathPatterns=tests/e2e",
+    "loadtest": "k6 run load-tests/scenarios.js",
+    "loadtest:smoke": "k6 run --vus 1 --duration 10s load-tests/scenarios.js",
+    "loadtest:report": "k6 run --summary-export load-tests/results/summary.json load-tests/scenarios.js",
+    "audit": "npm audit --audit-level=critical",
+    "audit:report": "npm audit --json > reports/npm-audit.json || true",
+    "snyk:test": "snyk test --severity-threshold=critical",
+    "snyk:report": "snyk test --json > reports/snyk-report.json || true",
+    "security:scan": "npm run audit:report && npm run snyk:report && npm run audit"
   },
   "dependencies": {
     "@sentry/node": "10.68.0",
@@ -92,6 +100,7 @@
     "node-pg-migrate": "^8.0.4",
     "pino-pretty": "^13.1.3",
     "prettier": "^3.9.6",
+    "snyk": "^1.1293.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.12",
     "ts-node-dev": "^2.0.0",

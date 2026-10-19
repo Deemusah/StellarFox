@@ -1,120 +1,183 @@
-# BANKERCHANGER
+# StellarFox
 
-Decentralized boxing-only prediction market built on Stellar Soroban.
+StellarFox is a decentralized application platform built on the Stellar network.
 
-## Stack
+## Infrastructure as Code
 
-| Layer | Technology |
-|---|---|
-| Smart Contracts | Rust / Soroban (Stellar) |
-| Backend | Node.js / TypeScript |
-| Frontend | Next.js 14 / TypeScript / Tailwind CSS |
-| Database | PostgreSQL 15 |
-| Cache | Redis 7 |
-| Wallet | Freighter / Albedo |
+All infrastructure for StellarFox is defined as code using [Terraform](https://www.terraform.io/).
+This makes environments reproducible: the same configuration can be provisioned consistently
+across development, staging, and production.
 
-## Project Structure
+### Layout
 
 ```
-contracts/    Soroban smart contracts (MarketFactory, Market, Treasury)
-backend/      Indexer + REST API
-frontend/     Next.js web app
-monitoring/   Prometheus + Alertmanager + Grafana configuration
-docs/         Architecture and API documentation
+infra/
+  terraform/
+    main.tf          # Provider configuration and shared locals
+    variables.tf     # Input variables (documented, with defaults)
+    outputs.tf       # Values exposed after provisioning
+    network.tf       # Networking resources
+    compute.tf       # Application compute resources
+    database.tf      # Managed database resources
+    storage.tf       # Object storage resources
+    terraform.tfvars.example  # Example variable values
 ```
 
-## Quick Start
+### Prerequisites
+
+- Terraform >= 1.5.0
+- Credentials for the target cloud provider, supplied via environment variables
+  (never committed to the repository)
+
+### Usage
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/bankerchanger.git && cd bankerchanger
+cd infra/terraform
 
-# 2. Set up environment files
-cp backend/.env.example backend/.env
-cp indexer/.env.example indexer/.env
-cp frontend/.env.example frontend/.env
-# Edit .env files with your configuration
+# Initialize providers and modules
+terraform init
 
-# 3. Start all services with one command
-docker compose up
+# Review the execution plan
+terraform plan -var-file=terraform.tfvars
 
-# The full stack is now running:
-# - PostgreSQL:  localhost:5432
-# - Redis:       localhost:6379
-# - Indexer:     localhost:3002
-# - Backend API: localhost:3001
-# - Frontend:    localhost:3000
+# Provision the infrastructure
+terraform apply -var-file=terraform.tfvars
+
+# Tear down when no longer needed
+terraform destroy -var-file=terraform.tfvars
 ```
 
-### Development Mode (Local)
+Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in environment-specific
+values before running `plan` or `apply`. The `terraform.tfvars` file is git-ignored.
 
-If you prefer to run services locally without Docker:
+### Reproducibility
+
+Because every resource is declared in code, environments can be recreated from scratch
+by running `terraform apply` against a fresh state. Remote state is configured so that
+multiple operators share a single source of truth.
+
+### Testing
+
+Infrastructure changes are validated in CI:
 
 ```bash
-# 1. Start only infrastructure services
-docker compose up postgres redis
-
-# 2. Backend (in separate terminal)
-cd backend && npm install && npm run dev
-
-# 3. Indexer (in separate terminal)
-cd indexer && npm install && npm run dev
-
-# 4. Frontend (in separate terminal)
-cd frontend && npm install && npm run dev
-```
-
-### Monitoring & Alerting (optional)
-
-Prometheus, Alertmanager and Grafana live in [`monitoring/`](monitoring) and start alongside the app:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
-
-# Prometheus   http://localhost:9090
-# Alertmanager http://localhost:9093
-# Grafana      http://localhost:3003  (admin / admin)
-```
-
-Metrics are scraped from the backend `/metrics` endpoint every 15s, alerting
-rules fire on the thresholds defined in `monitoring/prometheus/rules/`, and the
-dashboards are provisioned into Grafana automatically. See the
-[Observability Guide](docs/observability.md) for the full alert catalogue.
-
-## Contract Deployment
-
-Requires [Rust](https://rustup.rs/) and the [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli).
-
-```bash
-cd contracts
-
-# Build optimized WASM for all contracts
-cargo build --workspace
-# or: stellar contract build
-
-# Deploy to Testnet
-export ADMIN_SECRET_KEY=S...          # your Stellar secret key
-export ORACLE_ADDRESSES=G...,G...     # optional: comma-separated oracle addresses
-export DEFAULT_FEE_BPS=200            # optional: platform fee (default 200 = 2%)
-./scripts/deploy.sh testnet
-```
-
-Deployed addresses are saved to `contracts/deployments.json`:
-
-```json
-{
-  "network": "testnet",
-  "deployedAt": "2025-01-01T00:00:00Z",
-  "contracts": {
-    "treasury":      { "address": "C..." },
-    "marketFactory": { "address": "C...", "defaultFeeBps": 200 },
-    "market":        { "wasmHash": "abc123..." }
-  },
-  "admin": "G..."
-}
+cd infra/terraform
+terraform fmt -check
+terraform init -backend=false
+terraform validate
 ```
 
 Deployment order: `shared` (build only) → `treasury` → `market_factory` → `market` (wasm upload).
+
+## SSL/TLS Certificate Automation
+
+TLS certificates are managed automatically with [cert-manager](https://cert-manager.io/) and Let's Encrypt, so certificates are provisioned and renewed without manual intervention and never expire unnoticed.
+
+### Install cert-manager
+
+```bash
+# Install cert-manager CRDs and controllers
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+
+# Wait for the cert-manager components to become ready
+kubectl -n cert-manager rollout status deploy/cert-manager
+kubectl -n cert-manager rollout status deploy/cert-manager-webhook
+kubectl -n cert-manager rollout status deploy/cert-manager-cainjector
+```
+
+### Configure Let's Encrypt issuers
+
+Create a staging issuer first to validate DNS/HTTP-01 challenges without hitting production rate limits, then a production issuer:
+
+```yaml
+# k8s/cert-manager/cluster-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ops@bankerchanger.example
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ops@bankerchanger.example
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+```
+
+```bash
+kubectl apply -f k8s/cert-manager/cluster-issuer.yaml
+```
+
+### Provision and rotate certificates
+
+cert-manager renews certificates automatically before expiry. Set `renewBefore` to control how early renewal starts (default is 2/3 of the certificate lifetime):
+
+```yaml
+# k8s/cert-manager/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bankerchanger-tls
+  namespace: default
+spec:
+  secretName: bankerchanger-tls
+  duration: 2160h      # 90 days
+  renewBefore: 720h    # renew 30 days before expiry
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - bankerchanger.example
+    - api.bankerchanger.example
+```
+
+```bash
+kubectl apply -f k8s/cert-manager/certificate.yaml
+```
+
+Alternatively, annotate an Ingress and cert-manager will create the `Certificate` automatically:
+
+```yaml
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  tls:
+    - hosts: [bankerchanger.example]
+      secretName: bankerchanger-tls
+```
+
+### Verify automation
+
+```bash
+# Issuer and Certificate should report Ready=True
+kubectl get clusterissuer
+kubectl get certificate -A
+kubectl describe certificate bankerchanger-tls
+
+# Inspect the issued certificate and its expiry
+kubectl get secret bankerchanger-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -subject -dates
+```
+
+Automated tests for the provisioning and renewal configuration live in `k8s/cert-manager/certificate_test.sh` and run with `./k8s/cert-manager/certificate_test.sh`.
 
 ## Documentation
 
@@ -123,8 +186,11 @@ Deployment order: `shared` (build only) → `treasury` → `market_factory` → 
 - [Architecture Overview](docs/architecture.md) — System diagram, data flows, sequence diagrams
 - [API Rate Limits](docs/api-rate-limits.md) — Rate limit values, headers, client best practices
 - [Observability Guide](docs/observability.md) — Prometheus metric names, alerting, logging
+- [Backend Autoscaling](docs/autoscaling.md) — Kubernetes deployment, HPA thresholds, and load tests
 - [Operational Runbook](docs/runbook.md) — Incident response procedures for production
+- [Deployment Guide](docs/deployment-guide.md) — Instructions for deploying with Docker Compose
+- [Troubleshooting Guide](docs/troubleshooting-guide.md) — Common issues and resolution steps
 
-## License
+## Development
 
-MIT
+See the individual package READMEs for application-level setup instructions.
