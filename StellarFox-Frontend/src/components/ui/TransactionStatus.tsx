@@ -27,6 +27,7 @@ export function TransactionStatus({ txStatus, onRetry, onDismiss }: TransactionS
     <div
       role="status"
       aria-live="polite"
+      aria-atomic="true"
       className="rounded-xl border p-4 flex items-start gap-3 text-sm
         bg-gray-900 border-gray-700 dark:bg-gray-900 dark:border-gray-700"
     >

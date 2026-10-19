@@ -118,7 +118,7 @@ export function MarketFilters({ onChange }: Readonly<MarketFiltersProps>): JSX.E
         value={weightClass}
         onChange={(e) => setParam({ weightClass: e.target.value || null })}
         aria-label="Filter by weight class"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
+        className="min-h-[44px] bg-gray-800 text-gray-200 text-sm rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-amber-500"
       >
         <option value="">All Weight Classes</option>
         {WEIGHT_CLASSES.filter(Boolean).map((w) => (

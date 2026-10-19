@@ -1,0 +1,264 @@
+version: '3.9'
+
+# Blue-Green Deployment Configuration
+# Supports zero-downtime deployments by running dual environments (blue and green)
+# and switching traffic between them using a reverse proxy.
+#
+# Environment variable ACTIVE_ENV determines which environment (blue/green) receives traffic.
+# Possible values: 'blue' or 'green'
+
+services:
+  # ============================================================================
+  # Shared Infrastructure (Database, Cache) - Single Instance
+  # ============================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-bankerchanger}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-bankerchanger}
+      POSTGRES_DB: ${DB_NAME:-bankerchanger}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-bankerchanger}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bankerchanger
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bankerchanger
+
+  # ============================================================================
+  # Reverse Proxy (Nginx) - Traffic Switching Layer
+  # ============================================================================
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deployment/upstream.conf:/etc/nginx/upstream.conf:ro
+    environment:
+      ACTIVE_ENV: ${ACTIVE_ENV:-blue}
+    depends_on:
+      - backend-blue
+      - backend-green
+      - frontend-blue
+      - frontend-green
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - bankerchanger
+
+  # ============================================================================
+  # BLUE ENVIRONMENT - Production or Staging
+  # ============================================================================
+
+  backend-blue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: ./backend/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=blue
+    ports:
+      - '3001:3001'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3001/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: blue
+      service: backend
+
+  indexer-blue:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend-blue:
+        condition: service_healthy
+    env_file: ./indexer/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=blue
+      - FACTORY_CONTRACT_ADDRESS=${FACTORY_CONTRACT_ADDRESS}
+      - SOROBAN_RPC_URL=${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+    ports:
+      - '3002:3002'
+    volumes:
+      - indexer_data_blue:/app/data
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3002/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: blue
+      service: indexer
+
+  frontend-blue:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend-blue:
+        condition: service_healthy
+    env_file: ./frontend/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=blue
+      - NEXT_PUBLIC_API_URL=http://localhost/api
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: blue
+      service: frontend
+
+  # ============================================================================
+  # GREEN ENVIRONMENT - Staging or New Deployment
+  # ============================================================================
+
+  backend-green:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: ./backend/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=green
+    ports:
+      - '3011:3001'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3001/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: green
+      service: backend
+
+  indexer-green:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend-green:
+        condition: service_healthy
+    env_file: ./indexer/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=green
+      - FACTORY_CONTRACT_ADDRESS=${FACTORY_CONTRACT_ADDRESS}
+      - SOROBAN_RPC_URL=${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+    ports:
+      - '3012:3002'
+    volumes:
+      - indexer_data_green:/app/data
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3002/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: green
+      service: indexer
+
+  frontend-green:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend-green:
+        condition: service_healthy
+    env_file: ./frontend/.env
+    environment:
+      - NODE_ENV=production
+      - DEPLOYMENT_ENV=green
+      - NEXT_PUBLIC_API_URL=http://localhost/api
+    ports:
+      - '3010:3000'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - bankerchanger
+    labels:
+      deployment: green
+      service: frontend
+
+networks:
+  bankerchanger:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  indexer_data_blue:
+  indexer_data_green:

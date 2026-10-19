@@ -1,0 +1,25 @@
+# ============================================================
+# Grafana dashboard provisioning — BANKERCHANGER
+# ============================================================
+#
+# Mounted read-only at /etc/grafana/provisioning/dashboards by
+# `docker-compose.monitoring.yml`. Dashboards are loaded from the
+# directory mounted at the `options.path` below.
+#
+# Grafana UI: http://localhost:3003 (user: admin / admin)
+# ============================================================
+
+apiVersion: 1
+
+providers:
+  - name: bankerchanger
+    orgId: 1
+    folder: BANKERCHANGER
+    folderUid: bankerchanger
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
