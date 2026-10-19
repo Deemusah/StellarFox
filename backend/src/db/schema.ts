@@ -3,6 +3,7 @@ import {
   serial,
   text,
   numeric,
+  bigserial,
   boolean,
   timestamp,
   integer,
@@ -22,6 +23,7 @@ export const markets = pgTable(
     match_id: text('match_id').notNull(),
     fighter_a: text('fighter_a').notNull(),
     fighter_b: text('fighter_b').notNull(),
+    category: text('category').notNull().default('OTHER'),
     weight_class: text('weight_class').default(''),
     title_fight: boolean('title_fight').default(false),
     venue: text('venue').default(''),
@@ -32,6 +34,7 @@ export const markets = pgTable(
     pool_b: numeric('pool_b').default('0'),
     pool_draw: numeric('pool_draw').default('0'),
     total_pool: numeric('total_pool').default('0'),
+    min_bet_amount: numeric('min_bet_amount').notNull().default('1000000'),
     fee_bps: integer('fee_bps').default(200),
     resolved_at: timestamp('resolved_at', { withTimezone: true }),
     oracle_used: text('oracle_used'),
@@ -43,7 +46,36 @@ export const markets = pgTable(
   (table) => ({
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
     status_idx: index('markets_status_idx').on(table.status),
+    category_idx: index('markets_category_idx').on(table.category),
     scheduled_at_idx: index('markets_scheduled_at_idx').on(table.scheduled_at),
+  }),
+);
+
+export const probability_snapshots = pgTable(
+  'probability_snapshots',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    market_id: text('market_id').notNull(),
+    sampled_at: timestamp('sampled_at', { withTimezone: true }).notNull().defaultNow(),
+    source: text('source').notNull(),
+    probability_a: numeric('probability_a', { precision: 12, scale: 10 }).notNull(),
+    probability_b: numeric('probability_b', { precision: 12, scale: 10 }).notNull(),
+    probability_draw: numeric('probability_draw', { precision: 12, scale: 10 }).notNull(),
+    pool_a: numeric('pool_a').notNull(),
+    pool_b: numeric('pool_b').notNull(),
+    pool_draw: numeric('pool_draw').notNull(),
+    total_pool: numeric('total_pool').notNull(),
+  },
+  (table) => ({
+    market_sample_unique_idx: uniqueIndex('probability_snapshots_market_sample_unique').on(
+      table.market_id,
+      table.sampled_at,
+      table.source,
+    ),
+    market_sample_idx: index('probability_snapshots_market_sample_idx').on(
+      table.market_id,
+      table.sampled_at,
+    ),
   }),
 );
 
@@ -57,6 +89,7 @@ export const bets = pgTable(
     amount: numeric('amount').notNull(),
     amount_xlm: numeric('amount_xlm').default('0'),
     placed_at: timestamp('placed_at', { withTimezone: true }).defaultNow(),
+    expires_at: timestamp('expires_at', { withTimezone: true }),
     claimed: boolean('claimed').default(false),
     claimed_at: timestamp('claimed_at', { withTimezone: true }),
     payout: numeric('payout'),
@@ -66,6 +99,7 @@ export const bets = pgTable(
   (table) => ({
     market_id_idx: index('bets_market_id_idx').on(table.market_id),
     bettor_address_idx: index('bets_bettor_address_idx').on(table.bettor_address),
+    expires_at_idx: index('bets_expires_at_idx').on(table.expires_at),
     market_id_claimed_idx: index('bets_market_id_claimed_idx').on(table.market_id, table.claimed),
     tx_hash_idx: uniqueIndex('bets_tx_hash_idx').on(table.tx_hash),
   }),
@@ -157,6 +191,7 @@ export const disputes = pgTable(
     market_id: text('market_id').notNull().references(() => markets.market_id),
     user_id: text('user_id'),
     reason: text('reason').notNull(),
+    evidence_url: text('evidence_url'),
     status: text('status').default('open'),
     admin_notes: text('admin_notes'),
     final_outcome: text('final_outcome'),
@@ -177,6 +212,7 @@ export const users = pgTable(
     id: text('id').primaryKey(),
     email: text('email').notNull().unique(),
     password_hash: text('password_hash').notNull(),
+    stellar_address: text('stellar_address'),
     email_verified: boolean('email_verified').default(false),
     two_factor_enabled: boolean('two_factor_enabled').default(false),
     two_factor_secret: text('two_factor_secret'), // AES-GCM encrypted

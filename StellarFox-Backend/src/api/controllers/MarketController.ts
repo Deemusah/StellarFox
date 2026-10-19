@@ -11,6 +11,7 @@ import { ERROR_CODES } from '../../constants/errorCodes';
 import { validateQuery } from '../middleware/validate';
 import * as MarketService from '../../services/MarketService';
 import * as OracleService from '../../oracle/OracleService';
+import { MARKET_CATEGORY_FILTERS } from '../../models/MarketCategory';
 
 // ---------------------------------------------------------------------------
 // Issue #18 — listMarkets
@@ -18,6 +19,7 @@ import * as OracleService from '../../oracle/OracleService';
 
 const VALID_STATUSES = ['open', 'locked', 'resolved', 'cancelled', 'disputed'] as const;
 const MAX_LIMIT = 200;
+const VALID_CATEGORIES = MARKET_CATEGORY_FILTERS;
 
 const VALID_WEIGHT_CLASSES = [
   'Heavyweight',
@@ -44,6 +46,7 @@ const listMarketsQuerySchema = z.object({
   weight_class: z
     .enum(VALID_WEIGHT_CLASSES)
     .optional(),
+  category: z.enum(VALID_CATEGORIES).optional(),
   fighter: z.string().min(1).optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
@@ -70,9 +73,9 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 export async function listMarkets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = listMarketsQuerySchema.parse(req.query);
-    const { status, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
+    const { status, category, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
     const { markets, total } = await MarketService.getMarkets(
-      { status, weight_class, fighter, dateFrom, dateTo, sort },
+      { status, category, weight_class, fighter, dateFrom, dateTo, sort },
       { page, limit },
     );
     res.status(200).json({ markets, total, page, limit });
@@ -157,6 +160,36 @@ export async function getMarketStats(req: Request, res: Response, next: NextFunc
     const { market_id } = req.params;
     const stats = await MarketService.getMarketStats(market_id);
     res.status(200).json(stats);
+  } catch (err) {
+    next(err);
+  }
+}
+
+const probabilityHistoryQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+}).refine(({ from, to }) => !from || !to || from <= to, {
+  message: 'from must be before or equal to to',
+});
+
+/**
+ * GET /api/markets/:market_id/probabilities
+ *
+ * Returns sampled implied probabilities in chronological order.
+ */
+export async function getMarketProbabilityHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const marketIdParam = req.params.market_id;
+    const marketId = Array.isArray(marketIdParam) ? marketIdParam[0] : marketIdParam;
+    if (!marketId) throw AppError.badRequest('market_id is required');
+    const filters = probabilityHistoryQuerySchema.parse(req.query);
+    const snapshots = await MarketService.getProbabilityHistory(marketId, filters);
+    res.status(200).json({ market_id: marketId, snapshots });
   } catch (err) {
     next(err);
   }

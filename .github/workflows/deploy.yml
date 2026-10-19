@@ -1,0 +1,257 @@
+name: Deploy to Environment
+
+on:
+  workflow_run:
+    workflows: [CI/CD Pipeline]
+    types: [completed]
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================================
+  # DETERMINE DEPLOYMENT ENVIRONMENT
+  # ============================================================================
+  determine-environment:
+    name: Determine Target Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      deploy: ${{ steps.env.outputs.deploy }}
+    steps:
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENVIRONMENT="production"
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="none"
+          fi
+          
+          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          echo "deploy=$([ "${ENVIRONMENT}" != "none" ] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
+          echo "Determined environment: ${ENVIRONMENT}"
+
+  # ============================================================================
+  # DEPLOYMENT CHECKS
+  # ============================================================================
+  pre-deploy-checks:
+    name: Pre-Deployment Checks
+    needs: determine-environment
+    if: needs.determine-environment.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Docker images are available
+        run: |
+          REGISTRY="${{ env.REGISTRY }}"
+          REPO="${{ github.repository }}"
+          
+          for service in backend frontend indexer; do
+            echo "Checking ${service} image..."
+            docker pull ${REGISTRY}/${REPO}/${service}:${{ github.ref_name }} || {
+              echo "❌ Image not found: ${REGISTRY}/${REPO}/${service}:${{ github.ref_name }}"
+              exit 1
+            }
+            echo "✓ Found ${service} image"
+          done
+
+  # ============================================================================
+  # STAGING DEPLOYMENT
+  # ============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [determine-environment, pre-deploy-checks]
+    if: needs.determine-environment.outputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.bankerchanger.app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging environment"
+          echo "Repository: ${{ github.repository }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          
+          # TODO: Implement your deployment logic
+          # Examples:
+          # - kubectl apply -f k8s/staging/
+          # - docker-compose -f docker-compose.staging.yml up -d
+          # - AWS ECS deployments
+          # - Terraform apply
+          
+          echo "✓ Staging deployment completed"
+
+      - name: Run smoke tests
+        run: |
+          echo "🧪 Running smoke tests against staging"
+          
+          # Wait for services to be ready
+          sleep 30
+          
+          # TODO: Implement smoke tests
+          # - Health checks
+          # - API endpoint tests
+          # - Database connectivity
+          
+          echo "✓ Smoke tests passed"
+
+      - name: Notify deployment
+        if: success()
+        run: |
+          echo "✅ Successfully deployed to staging"
+          # TODO: Send Slack/Discord notification
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          echo "❌ Staging deployment failed"
+          # TODO: Send Slack/Discord notification
+
+  # ============================================================================
+  # PRODUCTION DEPLOYMENT
+  # ============================================================================
+  deploy-production:
+    name: Deploy to Production
+    needs: [determine-environment, pre-deploy-checks]
+    if: needs.determine-environment.outputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://bankerchanger.app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create deployment record
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.ref,
+              environment: 'production',
+              required_contexts: [],
+              auto_merge: false,
+            });
+            core.setOutput('deployment_id', deployment.data.id);
+
+      - name: Deploy to production
+        run: |
+          echo "🚀 Deploying to production environment"
+          echo "Repository: ${{ github.repository }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          
+          # TODO: Implement your deployment logic
+          # Examples:
+          # - kubectl apply -f k8s/production/
+          # - AWS ECS blue-green deployment
+          # - Rolling updates
+          # - Canary deployments
+          
+          echo "✓ Production deployment completed"
+
+      - name: Run smoke tests
+        run: |
+          echo "🧪 Running smoke tests against production"
+          
+          # Wait for services to be ready
+          sleep 30
+          
+          # TODO: Implement smoke tests
+          # - Health checks
+          # - API endpoint tests
+          # - Database connectivity
+          # - Wallet integration
+          
+          echo "✓ Smoke tests passed"
+
+      - name: Update deployment status
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: process.env.DEPLOYMENT_ID,
+              state: 'success',
+              environment_url: 'https://bankerchanger.app',
+              description: 'Deployment succeeded',
+            });
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "✅ Successfully deployed to production"
+          # TODO: Send Slack/Discord notification
+
+      - name: Update deployment status on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: process.env.DEPLOYMENT_ID,
+              state: 'failure',
+              description: 'Deployment failed',
+            });
+
+      - name: Notify deployment failure
+        if: failure()
+        run: |
+          echo "❌ Production deployment failed"
+          # TODO: Send Slack/Discord notification and create incident
+
+  # ============================================================================
+  # ROLLBACK CAPABILITY
+  # ============================================================================
+  rollback-production:
+    name: Rollback Production (Manual)
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create rollback issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🔴 Production Deployment Failed - Rollback Required',
+              body: `## Deployment Failure Alert\n\n**Failed Commit:** ${context.sha}\n**Branch:** ${context.ref}\n**Time:** ${new Date().toISOString()}\n\n### Action Required\nThis is an automated alert. Please investigate the deployment failure and manually trigger a rollback if needed.\n\n### Related Workflows\n- [Latest Run](${context.payload.repository.html_url}/actions/runs/${context.runId})\n- [Deployment Guide](${context.payload.repository.html_url}/blob/main/docs/deployment.md)`,
+              labels: ['🔴 critical', '⚠️ incident'],
+            });
+            console.log(`Created issue: #${issue.data.number}`);

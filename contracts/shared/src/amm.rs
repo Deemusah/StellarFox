@@ -3,19 +3,20 @@
 //! Automated Market Maker calculations for pool operations.
 //! ============================================================
 
-/// Constant Product AMM: k = pool_a × pool_b × pool_draw
+/// Three-outcome constant-product AMM.
 ///
-/// This module implements CFMM (Constant Function Market Maker) using a three-asset
-/// constant product invariant. It was chosen over LMSR for:
+/// Each trade changes one outcome reserve and its collateral reserve while the
+/// third reserve remains constant. The traded pair therefore preserves its
+/// constant-product invariant. It was chosen over LMSR for:
 /// - Simplicity and auditability
 /// - Proven track record in production (Uniswap, Stellar dex)
 /// - Deterministic pricing and composability
 /// - No reliance on parameterized liquidity curves
 ///
-/// Key insight: pool_draw acts as the "reserve" side; FighterA and FighterB are the
-/// tradeable sides. When bettors buy FighterA shares:
-/// - FighterA pool shrinks (they're reducing collateral needed for that outcome)
-/// - Draw pool grows (to maintain the invariant)
+/// Key insight: pool_draw is the collateral reserve for FighterA/FighterB trades.
+/// When a trader buys FighterA shares:
+/// - FighterA share reserve shrinks
+/// - Draw collateral reserve grows
 /// - Effective price = pool_draw / pool_a after trade (with price impact)
 
 /// AMM tier parameters controlling per-tier liquidity requirements and slippage limits.
@@ -23,14 +24,14 @@
 /// Each tier in the AMM & Odds Calculation Pipeline enforces different constraints
 /// to match the expected market depth and bet volume:
 ///
-/// | Tier | min_liquidity_stroops | max_slippage_bps | Description             |
-/// |------|-----------------------|------------------|-------------------------|
-/// | 8    | 800_000_000           | 3_000            | Entry-level markets     |
-/// | 10   | 1_000_000_000         | 2_500            | Standard markets        |
-/// | 12   | 1_200_000_000         | 2_000            | Established markets     |
-/// | 14   | 1_400_000_000         | 1_500            | High-volume markets     |
+/// | Tier | min_liquidity_units | max_slippage_bps | Description             |
+/// |------|---------------------|------------------|-------------------------|
+/// | 8    | 800_000_000         | 3_000            | Entry-level markets     |
+/// | 10   | 1_000_000_000       | 2_500            | Standard markets        |
+/// | 12   | 1_200_000_000       | 2_000            | Established markets     |
+/// | 14   | 1_400_000_000       | 1_500            | High-volume markets     |
 pub struct TierParams {
-    /// Minimum total pool size (in stroops) required before slippage checks apply.
+    /// Minimum total pool size (in shared seven-decimal units) before slippage checks apply.
     /// Below this threshold the AMM is considered bootstrapping and checks are lenient.
     pub min_liquidity_stroops: i128,
     /// Maximum price impact per bet in basis points (1 bps = 0.01%).
@@ -78,7 +79,7 @@ pub fn tier_params(tier: u8) -> Option<TierParams> {
 ///
 /// # Arguments
 /// * `tier`       - Tier byte (8, 10, 12, or 14)
-/// * `total_pool` - Current total pool size in stroops
+/// * `total_pool` - Current total pool size in the shared seven-decimal scale
 /// * `impact_bps` - Price impact of the bet in basis points (from `compute_odds`)
 pub fn check_tier_slippage(tier: u8, total_pool: i128, impact_bps: i128) -> bool {
     match tier_params(tier) {
@@ -136,18 +137,19 @@ pub fn isqrt(n: i128) -> Option<i128> {
 
 /// Computes dynamic odds using constant product AMM.
 ///
-/// The invariant is: pool_a * pool_b * pool_draw = k (constant)
+/// Each swap preserves the invariant of its traded reserve pair; the third
+/// reserve is unchanged and cancels from the three-outcome invariant.
 ///
-/// After a bet on side A with amount `bet_amount`:
-/// - New pool_a = pool_a - shares_out (seller is reducing collateral for outcome A)
-/// - New pool_draw = pool_draw + bet_amount (seller adds collateral to the draw pool)
+/// After buying side A with `bet_amount` collateral:
+/// - New pool_a = pool_a - shares_out
+/// - New pool_draw = pool_draw + bet_amount
 /// - We solve for shares_out using the invariant
 ///
 /// # Arguments
-/// * `pool_a` - Current pool for side A (in stroops)
-/// * `pool_b` - Current pool for side B (in stroops)
-/// * `pool_draw` - Current pool for Draw outcome (in stroops)
-/// * `bet_amount` - Size of the bet in stroops
+/// * `pool_a` - Current pool for side A (shared seven-decimal units)
+/// * `pool_b` - Current pool for side B (shared seven-decimal units)
+/// * `pool_draw` - Current pool for Draw outcome (shared seven-decimal units)
+/// * `bet_amount` - Size of the bet in shared seven-decimal units
 /// * `side` - Which outcome: 0 = FighterA, 1 = FighterB, 2 = Draw
 ///
 /// # Returns
@@ -170,9 +172,6 @@ pub fn compute_odds(
         return None;
     }
 
-    // Calculate the constant product invariant k
-    let k = pool_a.checked_mul(pool_b)?.checked_mul(pool_draw)?;
-
     let (pool_out, pool_in) = match side {
         0 => (pool_a, pool_draw), // Betting on FighterA: sell FighterA, buy with draw
         1 => (pool_b, pool_draw), // Betting on FighterB: sell FighterB, buy with draw
@@ -183,18 +182,16 @@ pub fn compute_odds(
     // New input pool after adding bet collateral
     let new_pool_in = pool_in.checked_add(bet_amount)?;
 
-    // Solve invariant for output: pool_out * (k / new_pool_in / other_pool)
-    // For sides A/B: k / (new_pool_draw * pool_a * pool_b)
-    // For draw: k / (new_pool_a * pool_b)
-    let other_pool = match side {
-        0 | 1 => pool_b.checked_mul(pool_a)?, // B and A remain the same for A/B bets
-        2 => pool_b.checked_mul(1)?, // Only B remains constant for draw bets (multiply by 1 to keep type consistent)
-        _ => return None,
+    // The third reserve cancels from the three-outcome invariant. Round the
+    // remaining reserve up so integer truncation cannot reduce the invariant.
+    let product = pool_out.checked_mul(pool_in)?;
+    let quotient = product.checked_div(new_pool_in)?;
+    let remainder = product.checked_rem(new_pool_in)?;
+    let new_pool_out = if remainder == 0 {
+        quotient
+    } else {
+        quotient.checked_add(1)?
     };
-
-    // new_pool_out = k / new_pool_in / other_pool
-    let new_pool_out_numerator = k / other_pool;
-    let new_pool_out = new_pool_out_numerator / new_pool_in;
 
     // Shares received = pool_out - new_pool_out
     let shares_out = pool_out.checked_sub(new_pool_out)?;
@@ -226,10 +223,59 @@ pub fn compute_odds(
     let price_impact_bps = if denominator == 0 {
         10000 // Max slippage
     } else {
-        ((numerator * 10000) / denominator).min(10000).max(0)
+        numerator
+            .checked_mul(10_000)?
+            .checked_div(denominator)?
+            .min(10_000)
+            .max(0)
     };
 
     Some((shares_out, price_impact_bps))
+}
+
+/// Quotes selling outcome shares back to the AMM.
+///
+/// `side` uses the same mapping as [`compute_odds`]. The invariant-preserving
+/// reverse trade returns collateral from the input reserve and restores the
+/// sold shares to the output reserve.
+pub fn compute_sell_quote(
+    pool_a: i128,
+    pool_b: i128,
+    pool_draw: i128,
+    shares_in: i128,
+    side: u8,
+) -> Option<(i128, i128)> {
+    if pool_a <= 0 || pool_b <= 0 || pool_draw <= 0 || shares_in <= 0 {
+        return None;
+    }
+
+    let (pool_out, pool_in) = match side {
+        0 => (pool_a, pool_draw),
+        1 => (pool_b, pool_draw),
+        2 => (pool_draw, pool_a),
+        _ => return None,
+    };
+    if shares_in >= pool_out {
+        return None;
+    }
+
+    let new_out = pool_out.checked_add(shares_in)?;
+    let collateral_out = pool_in.checked_mul(shares_in)?.checked_div(new_out)?;
+    if collateral_out <= 0 || collateral_out >= pool_in {
+        return None;
+    }
+
+    let numerator = pool_in
+        .checked_mul(shares_in)?
+        .checked_sub(collateral_out.checked_mul(pool_out)?)?;
+    let denominator = pool_in.checked_mul(shares_in)?;
+    let impact_bps = numerator
+        .checked_mul(10_000)?
+        .checked_div(denominator)?
+        .min(10_000)
+        .max(0);
+
+    Some((collateral_out, impact_bps))
 }
 
 /// Computes the maximum collateral a buyer can spend (or shares a seller can sell)
@@ -351,13 +397,72 @@ mod tests {
     }
 
     #[test]
+    fn test_buy_changes_pool_composition_and_moves_price() {
+        let (shares, impact) =
+            compute_odds(1_000_000, 1_000_000, 1_000_000, 100_000, 0).unwrap();
+        assert_eq!(shares, 90_909);
+        assert!(impact > 0);
+
+        let reserve_a_after = 1_000_000 - shares;
+        let reserve_draw_after = 1_100_000;
+        assert!(
+            reserve_draw_after * 1_000_000 > reserve_a_after * 1_000_000,
+            "buying Fighter A must raise its collateral price"
+        );
+        let (next_shares, next_impact) =
+            compute_odds(reserve_a_after, 1_000_000, reserve_draw_after, 100_000, 0).unwrap();
+        assert!(next_shares < shares);
+        assert!(next_impact > 0);
+        assert!(impact > 0);
+    }
+
+    #[test]
+    fn test_buy_preserves_traded_reserve_invariant_for_each_outcome() {
+        for side in 0..=2 {
+            let (shares, _) = compute_odds(2_000_000, 1_000_000, 1_500_000, 50_000, side)
+                .unwrap();
+            let (before, after) = match side {
+                0 => (
+                    2_000_000i128 * 1_500_000,
+                    (2_000_000 - shares) * (1_500_000 + 50_000),
+                ),
+                1 => (
+                    1_000_000i128 * 1_500_000,
+                    (1_000_000 - shares) * (1_500_000 + 50_000),
+                ),
+                _ => (
+                    1_500_000i128 * 2_000_000,
+                    (1_500_000 - shares) * (2_000_000 + 50_000),
+                ),
+            };
+            assert!(after >= before, "outcome {side} reduced the invariant");
+        }
+    }
+
+    #[test]
+    fn test_sell_quote_reverses_buy_without_creating_collateral() {
+        let (shares, _) =
+            compute_odds(1_000_000, 1_000_000, 1_000_000, 100_000, 0).unwrap();
+        let (collateral_out, impact) =
+            compute_sell_quote(1_000_000 - shares, 1_000_000, 1_100_000, shares, 0).unwrap();
+
+        assert!(collateral_out <= 100_000);
+        assert!(impact > 0);
+    }
+
+    #[test]
+    fn test_sell_quote_rejects_invalid_reserve_or_side() {
+        assert_eq!(compute_sell_quote(1, 1, 1, 1, 0), None);
+        assert_eq!(compute_sell_quote(1_000_000, 1_000_000, 1_000_000, 10, 3), None);
+    }
+
+    #[test]
     fn test_compute_odds_unequal_pools() {
-        // Fighter A pool is larger: less shares per bet
-        let (shares_a, _) = compute_odds(2_000_000, 1_000_000, 1_000_000, 10_000, 0).unwrap();
-        // Fighter B pool is smaller: more shares per bet
-        let (shares_b, _) = compute_odds(1_000_000, 2_000_000, 1_000_000, 10_000, 1).unwrap();
-        // More shares for the smaller pool (better odds)
-        assert!(shares_b > shares_a);
+        let (shares_thin, _) =
+            compute_odds(1_000_000, 1_000_000, 1_000_000, 10_000, 0).unwrap();
+        let (shares_deep, _) =
+            compute_odds(2_000_000, 1_000_000, 1_000_000, 10_000, 0).unwrap();
+        assert!(shares_deep > shares_thin);
     }
 
     #[test]
@@ -427,11 +532,11 @@ mod tests {
         let new_pool_b = pool_b;
         let new_pool_draw = pool_draw - shares_draw;
 
-        // Verify the invariant holds
+        // Integer rounding must preserve (or slightly increase) the invariant.
         let k_new = new_pool_a * new_pool_b * new_pool_draw;
-        assert_eq!(
-            k, k_new,
-            "CFMM invariant violated for Draw bet: k={} != k_new={}",
+        assert!(
+            k_new >= k,
+            "CFMM invariant decreased for Draw bet: k={} > k_new={}",
             k, k_new
         );
     }
@@ -450,14 +555,19 @@ mod tests {
         // Manual calculation:
         // k = 1_000_000 * 1_000_000 * 1_000_000 = 1e18
         // new_pool_a = 1_000_000 + 50_000 = 1_050_000
-        // new_pool_draw = k / (new_pool_a * pool_b) = 1e18 / (1_050_000 * 1_000_000)
-        //               = 1e18 / 1_050_000_000_000 ≈ 952_380.95
-        // shares_out = pool_draw - new_pool_draw ≈ 1_000_000 - 952_380 = 47_619 (approx, due to integer division)
+        // new_pool_draw = ceil(pool_draw * pool_a / new_pool_a) = 952_381.
+        // The reserve rounds up so integer truncation cannot reduce the invariant.
 
-        let k = pool_a as i128 * pool_b as i128 * pool_draw as i128;
         let new_pool_a = pool_a + bet_amount;
-        let new_pool_draw_numerator = k / (new_pool_a * pool_b);
-        let expected_shares = pool_draw - new_pool_draw_numerator;
+        let pair_product = pool_a * pool_draw;
+        let quotient = pair_product / new_pool_a;
+        let remainder = pair_product % new_pool_a;
+        let new_pool_draw = if remainder == 0 {
+            quotient
+        } else {
+            quotient + 1
+        };
+        let expected_shares = pool_draw - new_pool_draw;
 
         assert_eq!(shares_draw, expected_shares);
         // Shares should be reasonable (not zero, not huge)

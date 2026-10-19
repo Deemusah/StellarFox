@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
 
@@ -9,12 +10,16 @@ const SENSITIVE_PATHS = [
   '/api/admin',
 ];
 
-/**
- * Request logging middleware with structured format.
- * Development: human-readable format
- * Production: JSON format for log aggregation
- * Masks request body for sensitive paths and redacts Authorization header
- */
+const SENSITIVE_QUERY_PARAMS = ['password', 'token', 'secret', 'api_key', 'apikey'];
+
+function sanitizeQuery(query: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query)) {
+    sanitized[key] = SENSITIVE_QUERY_PARAMS.includes(key.toLowerCase()) ? '[REDACTED]' : value;
+  }
+  return sanitized;
+}
+
 export function requestLogging(req: Request, res: Response, next: NextFunction): void {
   const startTime = Date.now();
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -22,7 +27,16 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
   const path = req.path;
   const requestId = (req as Request & { requestId?: string }).requestId;
 
-  // Capture response end to log status and response time
+  // Read or generate correlation ID
+  const correlationId =
+    (req.headers['x-correlation-id'] as string | undefined) ?? randomUUID();
+
+  // Attach to request for downstream handlers
+  (req as any).correlationId = correlationId;
+
+  // Set response header immediately so it's present on all responses
+  res.setHeader('X-Correlation-ID', correlationId);
+
   const originalSend = res.send;
   res.send = function (data: unknown) {
     const responseTime = Date.now() - startTime;
@@ -31,11 +45,16 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
     const isSensitive = SENSITIVE_PATHS.some((p) => path.startsWith(p));
     const body = isSensitive ? '[REDACTED]' : JSON.stringify(req.body);
 
-    // Redact Authorization header to prevent token leakage
     const authHeader = req.get('authorization');
     const displayAuthHeader = authHeader ? 'Bearer [REDACTED]' : undefined;
 
-    const logData = {
+    const userId = (req as any).userId as string | undefined;
+
+    const sanitizedQuery =
+      Object.keys(req.query).length > 0 ? sanitizeQuery(req.query as Record<string, unknown>) : undefined;
+
+    const logData: Record<string, unknown> = {
+      correlationId,
       method,
       path,
       statusCode,
@@ -43,13 +62,23 @@ export function requestLogging(req: Request, res: Response, next: NextFunction):
       ip,
       ...(requestId && { requestId }),
       ...(isSensitive && { body }),
+      ...(sanitizedQuery && { query: sanitizedQuery }),
+      body,
       ...(displayAuthHeader && { authorization: displayAuthHeader }),
+      ...(userId && { userId }),
     };
 
-    if (process.env.NODE_ENV === 'production') {
-      logger.info(logData, `${method} ${path} ${statusCode}`);
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? `${method} ${path} ${statusCode}`
+        : `${method} ${path} ${statusCode} (${responseTime}ms)`;
+
+    if (statusCode >= 500) {
+      logger.error(logData, message);
+    } else if (statusCode >= 400) {
+      logger.warn(logData, message);
     } else {
-      logger.info(logData, `${method} ${path} ${statusCode} (${responseTime}ms)`);
+      logger.info(logData, message);
     }
 
     return originalSend.call(this, data);

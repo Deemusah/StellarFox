@@ -62,7 +62,7 @@ pub fn emit_resolution_finalized(env: &Env, market_id: u64, outcome_byte: u8) {
 /// Emits a `bet_placed` event when a bettor places a bet.
 ///
 /// Topics: `(Symbol("bet_placed"), market_id)`
-/// Data:   `BetRecord`
+/// Data:   `BetRecord` with amount in the shared seven-decimal calculation scale.
 pub fn emit_bet_placed(env: &Env, market_id: u64, bet: BetRecord) {
     let topics = (Symbol::new(env, "bet_placed"), market_id);
     env.events().publish(topics, bet);
@@ -71,7 +71,7 @@ pub fn emit_bet_placed(env: &Env, market_id: u64, bet: BetRecord) {
 /// Emits a `winnings_claimed` event when a winner claims their payout.
 ///
 /// Topics: `(Symbol("winnings_claimed"), market_id)`
-/// Data:   `ClaimReceipt`
+/// Data:   `ClaimReceipt` with amounts in the shared seven-decimal calculation scale.
 pub fn emit_winnings_claimed(env: &Env, market_id: u64, receipt: ClaimReceipt) {
     let topics = (Symbol::new(env, "winnings_claimed"), market_id);
     env.events().publish(topics, receipt);
@@ -80,7 +80,7 @@ pub fn emit_winnings_claimed(env: &Env, market_id: u64, receipt: ClaimReceipt) {
 /// Emits a `refund_claimed` event when a bettor claims a refund on a cancelled market.
 ///
 /// Topics: `(Symbol("refund_claimed"), market_id)`
-/// Data:   `(bettor, amount)`
+/// Data:   `(bettor, amount)` with amount in the shared seven-decimal calculation scale.
 pub fn emit_refund_claimed(env: &Env, market_id: u64, bettor: Address, amount: i128) {
     let topics = (Symbol::new(env, "refund_claimed"), market_id);
     env.events().publish(topics, (bettor, amount));
@@ -261,9 +261,9 @@ pub fn emit_audit_log_entry(env: &Env, entry: AuditEntry) {
 /// Data:   `(tier, pool_a, pool_b, pool_draw, impact_bps)`
 ///
 /// * `tier`       — Market tier byte (8 / 10 / 12 / 14; 0 = no tier)
-/// * `pool_a`     — New pool size for FighterA in stroops
-/// * `pool_b`     — New pool size for FighterB in stroops
-/// * `pool_draw`  — New pool size for Draw in stroops
+/// * `pool_a`     — New pool size for FighterA in the shared seven-decimal scale
+/// * `pool_b`     — New pool size for FighterB in the shared seven-decimal scale
+/// * `pool_draw`  — New pool size for Draw in the shared seven-decimal scale
 /// * `impact_bps` — Price impact of the triggering bet in basis points
 pub fn emit_odds_updated(
     env: &Env,
@@ -378,7 +378,8 @@ pub fn emit_withdrawal_audit_log(env: &Env, entry: crate::types::AuditEntry) {
 /// Emits a `liquidity_added` event when an LP provides liquidity to a market pool.
 ///
 /// Topics: `(Symbol("liquidity_added"), market_id)`
-/// Data:   `(provider, amount_a, amount_b, amount_draw, lp_shares)`
+/// Data:   `(provider, amount_a, amount_b, amount_draw, lp_shares)` with token
+/// amounts in the shared seven-decimal calculation scale.
 pub fn emit_liquidity_added(
     env: &Env,
     market_id: u64,
@@ -396,6 +397,7 @@ pub fn emit_liquidity_added(
 ///
 /// Topics: `(Symbol("liquidity_removed"), market_id)`
 /// Data:   `(provider, lp_shares_burned, amount_a, amount_b, amount_draw, fees_claimed)`
+/// with token amounts in the shared seven-decimal calculation scale.
 pub fn emit_liquidity_removed(
     env: &Env,
     market_id: u64,

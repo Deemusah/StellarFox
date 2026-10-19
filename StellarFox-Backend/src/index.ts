@@ -12,24 +12,31 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
+import { tracingMiddleware } from "./middleware/tracing.middleware";
 import { AppError } from "./utils/AppError";
 import { logger } from "./utils/logger";
 import { pool } from "./config/db";
 import { redis } from "./config/redis";
 import authRouter from "./routes/auth.routes";
 import marketRouter from "./routes/market.routes";
+import marketGroup3Router from "./routes/marketGroup3.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
 
 import engagementRouter from "./routes/engagement.routes";
+import feedbackRouter from "./routes/feedback.routes";
+import bugReportsRouter from "./routes/bugReports.routes";
+import watchlistRouter from "./routes/watchlist.routes";
+import retentionConfigRouter from "./routes/retentionConfig.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
-import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
+import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
 
@@ -44,6 +51,9 @@ const app = express();
 // CORS configuration - must be before other middleware
 app.use(createCorsMiddleware());
 
+// Distributed tracing - must be early so all downstream spans are correlated
+app.use(tracingMiddleware);
+
 // Middleware
 app.use(pinoHttp({ logger }));
 app.use(express.json());
@@ -55,6 +65,18 @@ if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
 }
 
 // Prometheus metrics endpoint (internal only — no auth required)
+app.get("/metrics/export", async (req, res) => {
+  const format = String(req.query.format ?? "json").toLowerCase();
+  if (format !== "json" && format !== "csv") {
+    return res.status(400).json({ error: "format must be json or csv" });
+  }
+
+  const body = await exportMetrics(format);
+  res.set("Content-Type", format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="metrics.${format}"`);
+  res.send(body);
+});
+
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
@@ -106,8 +128,13 @@ app.use(
 
 app.use("/auth", authRouter);
 app.use("/api/markets", marketRouter);
+app.use("/api/v2/markets", marketGroup3Router);
 app.use("/api/governance", governanceRouter);
 app.use("/api/engagement", engagementRouter);
+app.use("/api/feedback", feedbackRouter);
+app.use("/api/bug-reports", bugReportsRouter);
+app.use("/api/watchlist", watchlistRouter);
+app.use("/api/admin/retention", retentionConfigRouter);
 app.use("/api/claims", claimsRouter);
 app.use("/api/bets", claimsRouter);
 app.get("/api/stats", getPlatformStats);
@@ -159,6 +186,7 @@ const server = app.listen(PORT, () => {
   }
   startAutoResolutionCron();
   startAutoLockCron();
+  startProbabilitySnapshotCron();
   startCleanupCron();
 });
 
