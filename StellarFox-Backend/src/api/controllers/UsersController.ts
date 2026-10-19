@@ -8,6 +8,39 @@ import { logger } from '../../utils/logger.js';
 
 const userService = new UserService();
 
+/**
+ * Ingress-level rate limiting (issue #151).
+ *
+ * The Ingress controller enforces the primary per-IP / per-user limits and
+ * returns HTTP 429 with a `Retry-After` header when a client exceeds them.
+ * These helpers let the controller surface the same contract when a request
+ * is rejected upstream (e.g. the ingress forwards a 429) or when a local
+ * guard trips, so clients always receive a consistent rate limit response.
+ */
+const RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
+
+function isRateLimitError(error: any): boolean {
+  return (
+    error?.status === 429 ||
+    error?.statusCode === 429 ||
+    error?.code === 'RATE_LIMITED' ||
+    error?.code === 'TOO_MANY_REQUESTS'
+  );
+}
+
+function sendRateLimitResponse(res: Response, retryAfterSeconds = RATE_LIMIT_RETRY_AFTER_SECONDS) {
+  res.setHeader('Retry-After', String(retryAfterSeconds));
+  return res.status(429).json({
+    success: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many requests. Please retry later.',
+      retryAfter: retryAfterSeconds,
+    },
+    message: 'Too many requests. Please retry later.',
+  });
+}
+
 export class UsersController {
   /**
    * GET /api/users/:id — public; returns public profile
@@ -18,6 +51,9 @@ export class UsersController {
       const profile = await userService.getPublicProfile(id);
       return res.status(200).json({ success: true, data: profile });
     } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       if (error.message === 'User not found') {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -35,6 +71,9 @@ export class UsersController {
       const updated = await userService.updateProfile(userId, req.body);
       return res.status(200).json({ success: true, data: updated });
     } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       if (error.message === 'Username already taken') {
         return res.status(409).json({
           success: false,
@@ -55,6 +94,9 @@ export class UsersController {
       const profile = await userService.getMyProfile(userId);
       return res.status(200).json({ success: true, data: profile });
     } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       if (error.message === 'User not found') {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -83,7 +125,10 @@ export class UsersController {
 
       const result = await userService.listUsers({ page, limit, role, status, search });
       return res.status(200).json({ success: true, data: result });
-    } catch (error) {
+    } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       logger.error('UsersController.listUsers error', { error });
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
@@ -98,6 +143,9 @@ export class UsersController {
       await userService.suspendUser(id);
       return res.status(200).json({ success: true, message: 'User suspended' });
     } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       if (error.message === 'User not found') {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -124,6 +172,9 @@ export class UsersController {
       const user = await userService.updateUserRole(id, role as UserTier);
       return res.status(200).json({ success: true, data: { id: user.id, tier: user.tier } });
     } catch (error: any) {
+      if (isRateLimitError(error)) {
+        return sendRateLimitResponse(res);
+      }
       if (error.message === 'User not found') {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -197,7 +248,13 @@ export class UsersController {
         startDate,
         endDate,
       });
-    } catch (error) {
+    } catch (error: any) {
+      if (isRateLimitError(error)) {
+        if (!res.headersSent) {
+          return sendRateLimitResponse(res);
+        }
+        return;
+      }
       logger.error('UsersController.exportHistory error', { error });
       if (!res.headersSent) {
         return res.status(500).json({ success: false, message: 'Internal server error' });

@@ -33,6 +33,7 @@ use boxmeout_shared::{
 // ── Persistent Storage Keys ──────────────────────────────────────────────────
 const ADMIN: &str                        = "ADMIN";
 const BET_TOKEN: &str                    = "BET_TOKEN";
+const SUPPORTED_TOKENS: &str              = "SUPPORTED_TOKENS";             // Map<Address, bool>
 const FACTORY: &str                      = "FACTORY";
 const ACCUMULATED_FEES: &str             = "ACCUMULATED_FEES";             // Map<Address, i128>
 const ACCUMULATED_FEES_BY_MARKET: &str   = "ACCUMULATED_FEES_BY_MARKET";  // Map<u64, Map<Address, i128>>
@@ -69,6 +70,18 @@ impl Treasury {
         Ok(())
     }
 
+    fn require_supported_token(env: &Env, token: &Address) -> Result<(), ContractError> {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(env));
+        if !supported.get(token.clone()).unwrap_or(false) {
+            return Err(ContractError::TokenNotWhitelisted);
+        }
+        Ok(())
+    }
+
     fn day_bucket(env: &Env) -> u64 {
         env.ledger().timestamp() / 86400
     }
@@ -93,23 +106,46 @@ impl Treasury {
         daily.get(bucket).unwrap_or(0)
     }
 
-    fn record_token_withdrawal(env: &Env, token: &Address, bucket: u64, amount: i128) {
+    fn checked_add_i128(lhs: i128, rhs: i128) -> Result<i128, ContractError> {
+        lhs.checked_add(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    fn checked_sub_i128(lhs: i128, rhs: i128) -> Result<i128, ContractError> {
+        lhs.checked_sub(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    fn checked_add_u64(lhs: u64, rhs: u64) -> Result<u64, ContractError> {
+        lhs.checked_add(rhs).ok_or(ContractError::InvalidAmount)
+    }
+
+    /// Safety note: fee ledger totals, daily caps, and audit sequence IDs must never wrap.
+    /// Every balance adjustment in Treasury uses checked arithmetic so near-boundary values
+    /// fail with ContractError::InvalidAmount instead of silently corrupting state.
+    fn record_token_withdrawal(
+        env: &Env,
+        token: &Address,
+        bucket: u64,
+        amount: i128,
+    ) -> Result<(), ContractError> {
         let key = (Symbol::new(env, "DTW"), token.clone());
         let mut daily: Map<u64, i128> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(env));
         let today = daily.get(bucket).unwrap_or(0);
-        daily.set(bucket, today + amount);
+        let next_total = Self::checked_add_i128(today, amount)?;
+        daily.set(bucket, next_total);
 
         let mut stale: Vec<u64> = Vec::new(env);
         for (k, _) in daily.iter() {
-            if k + 1 < bucket {
-                stale.push_back(k);
+            match k.checked_add(1) {
+                Some(next) if next < bucket => stale.push_back(k),
+                _ => {}
             }
         }
         for k in stale.iter() {
             daily.remove(k);
         }
         env.storage().persistent().set(&key, &daily);
+        Ok(())
     }
 
     fn record_audit(
@@ -119,7 +155,7 @@ impl Treasury {
         amount: i128,
         actor: Address,
         destination: Address,
-    ) {
+    ) -> Result<(), ContractError> {
         let next_id: u64 = env.storage().persistent().get(&AUDIT_NEXT_ID).unwrap_or(0);
         let bucket = Self::day_bucket(env);
         let entry = AuditEntry {
@@ -140,9 +176,10 @@ impl Treasury {
             .unwrap_or_else(|| Vec::new(env));
         log.push_back(entry.clone());
         env.storage().persistent().set(&AUDIT_LOG, &log);
-        env.storage().persistent().set(&AUDIT_NEXT_ID, &(next_id + 1));
+        env.storage().persistent().set(&AUDIT_NEXT_ID, &Self::checked_add_u64(next_id, 1)?);
 
         boxmeout_shared::emit_audit_recorded(env, entry);
+        Ok(())
     }
 }
 
@@ -161,6 +198,9 @@ impl Treasury {
         }
         env.storage().persistent().set(&ADMIN, &admin);
         env.storage().persistent().set(&BET_TOKEN, &bet_token);
+        let mut supported_tokens = Map::<Address, bool>::new(&env);
+        supported_tokens.set(bet_token.clone(), true);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported_tokens);
         env.storage().persistent().set(&FACTORY, &factory);
         env.storage().persistent().set(&WITHDRAWAL_LIMIT, &withdrawal_limit);
         env.storage().persistent().set(&ACCUMULATED_FEES, &Map::<Address, i128>::new(&env));
@@ -227,6 +267,68 @@ impl Treasury {
         Ok(())
     }
 
+    /// Adds a token to the set of assets supported by the treasury.
+    pub fn add_supported_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.set(token, true);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported);
+        Ok(())
+    }
+
+    /// Removes a token from the set of assets supported by the treasury.
+    pub fn remove_supported_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.remove(token);
+        env.storage().persistent().set(&SUPPORTED_TOKENS, &supported);
+        Ok(())
+    }
+
+    pub fn is_token_supported(env: Env, token: Address) -> bool {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        supported.get(token).unwrap_or(false)
+    }
+
+    pub fn get_supported_tokens(env: Env) -> Vec<Address> {
+        let supported: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&SUPPORTED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        let mut tokens = Vec::new(&env);
+        for (token, is_supported) in supported.iter() {
+            if is_supported {
+                tokens.push_back(token);
+            }
+        }
+        tokens
+    }
+
     /// Deposits fees from an approved market.
     pub fn deposit_fees(
         env: Env,
@@ -247,6 +349,7 @@ impl Treasury {
         if !markets.contains(market.clone()) {
             return Err(ContractError::MarketNotApproved);
         }
+        Self::require_supported_token(&env, &token)?;
 
         let mut fees: Map<Address, i128> = env
             .storage()
@@ -254,7 +357,8 @@ impl Treasury {
             .get(&ACCUMULATED_FEES)
             .unwrap_or_else(|| Map::new(&env));
         let current = fees.get(token.clone()).unwrap_or(0);
-        fees.set(token.clone(), current + amount);
+        let next_total = Self::checked_add_i128(current, amount)?;
+        fees.set(token.clone(), next_total);
         env.storage().persistent().set(&ACCUMULATED_FEES, &fees);
 
         token::Client::new(&env, &token).transfer(
@@ -270,7 +374,7 @@ impl Treasury {
             amount,
             market.clone(),
             env.current_contract_address(),
-        );
+        )?;
 
         boxmeout_shared::emit_fee_deposited(&env, market, token, amount);
         Ok(())
@@ -286,6 +390,7 @@ impl Treasury {
     ) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        Self::require_supported_token(&env, &token)?;
 
         if amount < MIN_WITHDRAWAL {
             return Err(ContractError::BelowMinimum);
@@ -310,7 +415,8 @@ impl Treasury {
         let token_cap = cap_map.get(token.clone()).unwrap_or(0);
         if token_cap > 0 {
             let already = Self::token_withdrawn_today(&env, &token, bucket);
-            if already + amount > token_cap {
+            let projected = Self::checked_add_i128(already, amount)?;
+            if projected > token_cap {
                 return Err(ContractError::DailyWithdrawalLimitExceeded);
             }
         }
@@ -328,11 +434,12 @@ impl Treasury {
             return Err(ContractError::InsufficientBalance);
         }
 
-        fees.set(token.clone(), current - amount);
+        let reduced_total = Self::checked_sub_i128(current, amount)?;
+        fees.set(token.clone(), reduced_total);
         env.storage().persistent().set(&ACCUMULATED_FEES, &fees);
 
         if token_cap > 0 {
-            Self::record_token_withdrawal(&env, &token, bucket, amount);
+            Self::record_token_withdrawal(&env, &token, bucket, amount)?;
         }
 
         Self::release_fee_lock(&env);
@@ -350,7 +457,7 @@ impl Treasury {
             amount,
             admin.clone(),
             destination.clone(),
-        );
+        )?;
 
         boxmeout_shared::emit_fee_withdrawn(&env, token, amount, destination);
         Ok(())
@@ -365,6 +472,7 @@ impl Treasury {
     ) -> Result<i128, ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+        Self::require_supported_token(&env, &token)?;
 
         Self::acquire_fee_lock(&env)?;
 
@@ -397,7 +505,7 @@ impl Treasury {
             amount,
             admin.clone(),
             destination.clone(),
-        );
+        )?;
 
         boxmeout_shared::emit_emergency_drain(&env, token, amount, destination);
         Ok(amount)
@@ -572,6 +680,7 @@ impl Treasury {
     pub fn extend_ttl(env: Env) {
         env.storage().persistent().extend_ttl(&ADMIN, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&BET_TOKEN, 518_400, 518_400);
+        env.storage().persistent().extend_ttl(&SUPPORTED_TOKENS, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&FACTORY, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&WITHDRAWAL_LIMIT, 518_400, 518_400);
         env.storage().persistent().extend_ttl(&ACCUMULATED_FEES, 518_400, 518_400);
@@ -696,5 +805,50 @@ mod tests {
         assert_eq!(client.get_audit_log_len(), log.len() as u64);
         let entry = client.get_audit_entry(&0).unwrap();
         assert_eq!(entry.id, 0);
+    }
+
+    #[test]
+    fn whitelist_is_initialized_and_admin_can_manage_tokens() {
+        let (env, client, admin, _market, bet_token, _) = setup(10_000_000);
+        let another_token = env.register_stellar_asset_contract(admin.clone());
+
+        assert!(client.is_token_supported(&bet_token));
+        assert_eq!(client.get_supported_tokens().len(), 1);
+
+        client.add_supported_token(&admin, &another_token);
+        assert!(client.is_token_supported(&another_token));
+        assert_eq!(client.get_supported_tokens().len(), 2);
+
+        client.remove_supported_token(&admin, &another_token);
+        assert!(!client.is_token_supported(&another_token));
+        assert_eq!(client.get_supported_tokens().len(), 1);
+    }
+
+    #[test]
+    fn non_admin_cannot_manage_supported_tokens() {
+        let (env, client, _admin, _market, _bet_token, _) = setup(10_000_000);
+        let non_admin = Address::generate(&env);
+        let another_token = env.register_stellar_asset_contract(non_admin.clone());
+
+        let result = client.try_add_supported_token(&non_admin, &another_token);
+        assert_eq!(result.unwrap_err(), Ok(ContractError::Unauthorized));
+    }
+
+    #[test]
+    fn unsupported_tokens_are_rejected_for_deposit_withdrawal_and_drain() {
+        let (env, client, admin, market, _bet_token, _) = setup(10_000_000);
+        let unsupported = env.register_stellar_asset_contract(admin.clone());
+        StellarAssetClient::new(&env, &unsupported).mint(&market, &10_000_000);
+
+        let deposit = client.try_deposit_fees(&market, &unsupported, &10_000_000);
+        assert_eq!(deposit.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+
+        let destination = Address::generate(&env);
+        let withdrawal = client.try_withdraw_fees(&admin, &unsupported, &10_000_000, &destination);
+        assert_eq!(withdrawal.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+
+        let drain = client.try_drain_fees(&admin, &unsupported, &destination);
+        assert_eq!(drain.unwrap_err(), Ok(ContractError::TokenNotWhitelisted));
+        assert_eq!(client.get_accumulated_fees(&unsupported), 0);
     }
 }
