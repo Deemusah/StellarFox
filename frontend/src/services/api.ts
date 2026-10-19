@@ -109,6 +109,34 @@ export async function fetchMarkets(
   return apiFetch<MarketListResponse>(`/api/markets${qs ? `?${qs}` : ''}`);
 }
 
+export interface MarketSuggestion {
+  /** Fighter name */
+  name: string;
+  /** Market this fighter appears in */
+  market_id: string;
+  /** Which fighter slot: 'a' or 'b' */
+  side: 'a' | 'b';
+}
+
+export interface MarketSuggestionsResponse {
+  suggestions: MarketSuggestion[];
+}
+
+/**
+ * Calls GET /api/markets/search/suggestions?q=<query>&limit=<limit>.
+ * Returns up to `limit` fighter name suggestions matching the query.
+ * Throws NetworkError if the request fails.
+ */
+export async function fetchMarketSuggestions(
+  query: string,
+  limit = 8,
+): Promise<MarketSuggestionsResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return apiFetch<MarketSuggestionsResponse>(
+    `/api/markets/search/suggestions?${params.toString()}`,
+  );
+}
+
 /**
  * Calls GET /api/markets/:market_id.
  * Returns the Market including live odds.

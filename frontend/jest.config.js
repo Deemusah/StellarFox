@@ -32,6 +32,7 @@ module.exports = {
         '^@stellar/stellar-sdk$': '<rootDir>/src/__tests__/mocks/stellar-sdk.js',
       },
       testPathIgnorePatterns: ['/node_modules/'],
+      setupFilesAfterEnv: ['<rootDir>/src/__tests__/setupComponents.ts'],
       globals: { 'ts-jest': { isolatedModules: true } },
     },
     // Hook / service / integration tests — with MSW setup
@@ -50,7 +51,7 @@ module.exports = {
       },
       setupFiles: ['<rootDir>/src/__tests__/fetchPolyfill.js'],
       setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
-      transformIgnorePatterns: ['/node_modules/(?!(rettime|msw|@mswjs|@open-draft|outvariant|strict-event-emitter|until-async)/)'],
+      transformIgnorePatterns: ['/node_modules/(?!(rettime|msw|@mswjs|@open-draft|outvariant|strict-event-emitter|until-async|rettime|until-async|path-to-regexp|type-fest|headers-polyfill|is-node-process)/)'],
       globals: { 'ts-jest': { isolatedModules: true } },
     },
     // API service unit tests — fetch-spy based, no MSW

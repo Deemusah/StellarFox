@@ -1,5 +1,10 @@
 'use client';
 
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { MarketSearchAutocomplete } from './MarketSearchAutocomplete';
+
+export type SortOption = 'newest' | 'ending_soon' | 'biggest_pool';
 import { useEffect, useRef, useState } from 'react';
 
 const WEIGHT_CLASSES = [
@@ -58,6 +63,21 @@ export function MarketFilters({
   const [searchInput, setSearchInput] = useState(search);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusTabsRef = useRef<HTMLDivElement>(null);
+  const setParam = useCallback(
+    (updates: Record<string, string | null>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === null || value === '') {
+          params.delete(key);
+        } else {
+          params.set(key, value);
+        }
+      }
+      params.delete('page');
+      router.replace(`?${params.toString()}`);
+    },
+    [router, searchParams],
+  );
 
   useEffect(() => {
     setSearchInput(search);
@@ -65,6 +85,7 @@ export function MarketFilters({
 
   const handleSearchChange = (value: string) => {
     setSearchInput(value);
+    setParam({ search: value || null });
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       onSearchChange(value);
@@ -132,15 +153,15 @@ export function MarketFilters({
         ))}
       </div>
 
+      {/* Fighter name search — autocomplete */}
+      <MarketSearchAutocomplete
       {/* Fighter name search */}
       <input
         type="search"
         id="market-search"
         value={searchInput}
-        onChange={(e) => handleSearchChange(e.target.value)}
+        onCommit={handleSearchChange}
         placeholder="Search fighters…"
-        aria-label="Search fighters"
-        className="min-h-[44px] bg-gray-800 text-white text-sm rounded-lg px-3 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 w-48"
       />
 
       {/* Sort dropdown */}
