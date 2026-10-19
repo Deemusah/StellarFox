@@ -17,4 +17,5 @@ export interface JwtUser {
 
 export interface AuthenticatedRequest extends Request {
   user?: JwtUser;
+  userId?: string;
 }

@@ -22,8 +22,22 @@ import marketGroup3Router from "./routes/marketGroup3.routes";
 import governanceRouter from "./routes/governance.routes";
 import adminRouter from "./routes/admin.routes";
 import usersRouter from "./routes/users.routes";
+import disputesRouter from "./routes/disputes.routes";
+import userActivityRouter from "./routes/userActivity.routes";
 
 import engagementRouter from "./routes/engagement.routes";
+import feedbackRouter from "./routes/feedback.routes";
+import bugReportsRouter from "./routes/bugReports.routes";
+import watchlistRouter from "./routes/watchlist.routes";
+import retentionConfigRouter from "./routes/retentionConfig.routes";
+import feedbackRouter from "./routes/feedback.routes";
+import bugReportsRouter from "./routes/bugReports.routes";
+import watchlistRouter from "./routes/watchlist.routes";
+import retentionConfigRouter from "./routes/retentionConfig.routes";
+import profileRouter from "./routes/profile.routes";
+import notificationPrefsRouter from "./routes/notificationPrefs.routes";
+import referralsRouter from "./routes/referrals.routes";
+import leaderboardRouter from "./routes/leaderboard.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
@@ -31,7 +45,7 @@ import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
-import { register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
+import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
 
@@ -57,6 +71,18 @@ if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
 }
 
 // Prometheus metrics endpoint (internal only — no auth required)
+app.get("/metrics/export", async (req, res) => {
+  const format = String(req.query.format ?? "json").toLowerCase();
+  if (format !== "json" && format !== "csv") {
+    return res.status(400).json({ error: "format must be json or csv" });
+  }
+
+  const body = await exportMetrics(format);
+  res.set("Content-Type", format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="metrics.${format}"`);
+  res.send(body);
+});
+
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
@@ -111,11 +137,25 @@ app.use("/api/markets", marketRouter);
 app.use("/api/v2/markets", marketGroup3Router);
 app.use("/api/governance", governanceRouter);
 app.use("/api/engagement", engagementRouter);
+app.use("/api/feedback", feedbackRouter);
+app.use("/api/bug-reports", bugReportsRouter);
+app.use("/api/watchlist", watchlistRouter);
+app.use("/api/admin/retention", retentionConfigRouter);
+app.use("/api/feedback", feedbackRouter);
+app.use("/api/bug-reports", bugReportsRouter);
+app.use("/api/watchlist", watchlistRouter);
+app.use("/api/admin/retention", retentionConfigRouter);
+app.use("/api/referrals", referralsRouter);
+app.use("/api/leaderboard", leaderboardRouter);
 app.use("/api/claims", claimsRouter);
 app.use("/api/bets", claimsRouter);
 app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/users", usersRouter);
+app.use("/api/users", profileRouter);
+app.use("/api/users", notificationPrefsRouter);
+app.use("/api/disputes", disputesRouter);
+app.use("/api/v1/user-activity", userActivityRouter);
 app.use("/api/admin", adminRouter);
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));

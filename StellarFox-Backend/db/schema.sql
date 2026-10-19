@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS markets (
   match_id         TEXT        NOT NULL,
   fighter_a        TEXT        NOT NULL,
   fighter_b        TEXT        NOT NULL,
+  category         TEXT        NOT NULL DEFAULT 'OTHER',
   weight_class     TEXT        NOT NULL DEFAULT '',
   title_fight      BOOLEAN     NOT NULL DEFAULT FALSE,
   venue            TEXT        NOT NULL DEFAULT '',
@@ -152,6 +153,7 @@ CREATE TRIGGER market_audit_log_reject_truncate
   BEFORE TRUNCATE ON market_audit_log
   FOR EACH STATEMENT EXECUTE FUNCTION reject_market_audit_mutation();
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON market_audit_log FROM PUBLIC;
+CREATE INDEX IF NOT EXISTS markets_category_idx ON markets(category);
 
 CREATE TABLE IF NOT EXISTS bets (
   id               SERIAL PRIMARY KEY,

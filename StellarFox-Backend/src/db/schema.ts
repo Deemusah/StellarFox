@@ -23,6 +23,7 @@ export const markets = pgTable(
     match_id: text('match_id').notNull(),
     fighter_a: text('fighter_a').notNull(),
     fighter_b: text('fighter_b').notNull(),
+    category: text('category').notNull().default('OTHER'),
     weight_class: text('weight_class').default(''),
     title_fight: boolean('title_fight').default(false),
     venue: text('venue').default(''),
@@ -44,6 +45,7 @@ export const markets = pgTable(
   (table) => ({
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
     status_idx: index('markets_status_idx').on(table.status),
+    category_idx: index('markets_category_idx').on(table.category),
     scheduled_at_idx: index('markets_scheduled_at_idx').on(table.scheduled_at),
   }),
 );

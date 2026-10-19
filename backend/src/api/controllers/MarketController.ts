@@ -11,6 +11,54 @@ import { ERROR_CODES } from '../../constants/errorCodes';
 import { validateQuery } from '../middleware/validate';
 import * as MarketService from '../../services/MarketService';
 import * as OracleService from '../../oracle/OracleService';
+import { MARKET_CATEGORY_FILTERS } from '../../models/MarketCategory';
+
+// ---------------------------------------------------------------------------
+// Autocomplete — GET /api/markets/search/suggestions
+// ---------------------------------------------------------------------------
+
+const suggestionsQuerySchema = z.object({
+  q: z.string().min(1, { message: 'q must be at least 1 character' }).max(100),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(8),
+});
+
+/**
+ * GET /api/markets/search/suggestions?q=<query>&limit=<limit>
+ *
+ * Returns up to `limit` distinct fighter names that ILIKE-match the query.
+ * Each entry includes the market_id and which fighter slot ('a' or 'b').
+ *
+ * Responds 200 with { suggestions: [{ name, market_id, side }] }.
+ * Responds 400 on invalid params.
+ */
+export async function searchSuggestions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = suggestionsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const errors = parsed.error.issues.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      res.status(400).json({ errors });
+      return;
+    }
+
+    const { q, limit } = parsed.data;
+    const suggestions = await MarketService.getFighterSuggestions(q, limit);
+    res.status(200).json({ suggestions });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Issue #18 — listMarkets
@@ -44,6 +92,7 @@ const listMarketsQuerySchema = z.object({
   weight_class: z
     .enum(VALID_WEIGHT_CLASSES)
     .optional(),
+  category: z.enum(MARKET_CATEGORY_FILTERS).optional(),
   fighter: z.string().min(1).optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
@@ -70,9 +119,9 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
 export async function listMarkets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = listMarketsQuerySchema.parse(req.query);
-    const { status, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
+    const { status, category, weight_class, fighter, dateFrom, dateTo, sort, page, limit } = parsed;
     const { markets, total } = await MarketService.getMarkets(
-      { status, weight_class, fighter, dateFrom, dateTo, sort },
+      { status, category, weight_class, fighter, dateFrom, dateTo, sort },
       { page, limit },
     );
     res.status(200).json({ markets, total, page, limit });
@@ -187,6 +236,24 @@ export async function getMarketProbabilityHistory(
     const filters = probabilityHistoryQuerySchema.parse(req.query);
     const snapshots = await MarketService.getProbabilityHistory(marketId, filters);
     res.status(200).json({ market_id: marketId, snapshots });
+export async function getMarketAnalytics(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const analytics = await MarketService.getMarketAnalytics();
+    res.status(200).json(analytics);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getMarketRecommendations(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const userId = (req as Request & { userId?: string }).userId;
+    if (!userId) throw new AppError(401, 'Authentication required');
+
+    const limitSchema = z.coerce.number().int().min(1).max(50).default(10);
+    const limit = limitSchema.parse(req.query.limit);
+    const recommendations = await MarketService.getRecommendedMarkets(userId, limit);
+    res.status(200).json(recommendations);
   } catch (err) {
     next(err);
   }

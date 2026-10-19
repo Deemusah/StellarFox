@@ -147,6 +147,24 @@ router.get(
 
 /**
  * @swagger
+ * /api/disputes/mine:
+ *   get:
+ *     summary: List the authenticated user's disputes
+ *     tags: [Disputes]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Paginated dispute history for the authenticated user
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/mine', requireAuth, (req: Request, res: Response, next: NextFunction) => {
+  disputesController.listMyDisputes(req as AuthenticatedRequest, res).catch(next);
+});
+
+/**
+ * @swagger
  * /api/disputes/{disputeId}:
  *   get:
  *     summary: Get dispute details
@@ -164,7 +182,7 @@ router.get(
  *       404:
  *         description: Dispute not found
  */
-router.get('/:disputeId', (req: Request, res: Response, next: NextFunction) => {
+router.get('/:disputeId', requireAuth, (req: Request, res: Response, next: NextFunction) => {
   disputesController.getDispute(req as AuthenticatedRequest, res).catch(next);
 });
 

@@ -47,6 +47,8 @@ mod security_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -435,6 +437,8 @@ mod place_bet_edge_cases {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -809,6 +813,8 @@ mod full_market_lifecycle {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -992,6 +998,8 @@ mod resolve_dispute_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1180,6 +1188,8 @@ mod get_current_odds_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1325,6 +1335,8 @@ mod estimate_payout_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1510,6 +1522,8 @@ mod oracle_sig_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -1565,6 +1579,12 @@ mod oracle_sig_tests {
         msg.append(&Bytes::from_slice(env, match_id.as_bytes()));
         msg.push_back(outcome_byte);
         for b in reported_at.to_be_bytes().iter() {
+            msg.push_back(*b);
+        }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
             msg.push_back(*b);
         }
         msg
@@ -1817,6 +1837,8 @@ mod claim_routing_tests {
             lock_before_secs: 3600,
             resolution_window: 86400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2186,6 +2208,8 @@ mod bet_timing_lock_tests {
             lock_before_secs: LOCK_BEFORE_SECS,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2317,11 +2341,17 @@ mod min_bet_enforcement_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
-            tier: 0,
         }
     }
 
     fn setup(env: &Env, min_bet_amount: i128) -> (crate::MarketClient<'static>, Address) {
+        setup_with_config(env, config(min_bet_amount))
+    }
+
+    fn setup_with_config(
+        env: &Env,
+        market_config: MarketConfig,
+    ) -> (crate::MarketClient<'static>, Address) {
         env.mock_all_auths();
         env.ledger().set(LedgerInfo {
             timestamp: 1_000,
@@ -2341,11 +2371,76 @@ mod min_bet_enforcement_tests {
             &factory,
             &1u64,
             &fight(env),
-            &config(min_bet_amount),
+            &market_config,
             &treasury,
         );
         let token_id = env.register_stellar_asset_contract(factory.clone());
         (client, token_id)
+    }
+
+    #[test]
+    fn normalizes_six_decimal_bet_before_market_calculations() {
+        let env = Env::default();
+        let mut market_config = config(1_000_000);
+        market_config.token_decimals = 6;
+        let (client, token_id) = setup_with_config(&env, market_config);
+        let bettor = Address::generate(&env);
+        let asset = StellarAssetClient::new(&env, &token_id);
+        asset.mint(&bettor, &100_000);
+
+        let bet = client.place_bet(
+            &bettor,
+            &BetSide::FighterA,
+            &100_000,
+            &token_id,
+            &0,
+        );
+
+        assert_eq!(bet.amount, 1_000_000);
+        assert_eq!(client.get_pool_sizes(), (1_000_000, 0, 0));
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &token_id).balance(&bettor),
+            0
+        );
+        assert_eq!(client.get_token_decimals(), 6);
+
+        let other_token = env.register_stellar_asset_contract(Address::generate(&env));
+        let other_bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &other_token).mint(&other_bettor, &100_000);
+        let result = client.try_place_bet(
+            &other_bettor,
+            &BetSide::FighterA,
+            &100_000,
+            &other_token,
+            &0,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            Ok(boxmeout_shared::errors::ContractError::MarketTokenMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_amounts_that_cannot_be_normalized_without_precision_loss() {
+        let env = Env::default();
+        let mut market_config = config(1);
+        market_config.token_decimals = 8;
+        let (client, token_id) = setup_with_config(&env, market_config);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &1);
+
+        let result = client.try_place_bet(
+            &bettor,
+            &BetSide::FighterA,
+            &1,
+            &token_id,
+            &0,
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            Ok(boxmeout_shared::errors::ContractError::InvalidTokenPrecision)
+        );
     }
 
     /// Bet exactly at min_bet_amount must succeed.
@@ -2464,6 +2559,8 @@ mod place_bet_boundary_fuzz_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2599,6 +2696,8 @@ mod get_all_bets_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -2799,6 +2898,8 @@ mod market_lifecycle_tests {
             lock_before_secs: LOCK_BEFORE,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3208,6 +3309,8 @@ mod stale_oracle_reports_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3216,6 +3319,7 @@ mod stale_oracle_reports_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, "FURY-USYK-2025"),
             outcome: Outcome::FighterA,
+            outcome_version: 2,
             reported_at: submitted_at,
             submitted_at,
             signature: soroban_sdk::BytesN::from_array(env, &[0u8; 64]),
@@ -3484,6 +3588,8 @@ mod reentrancy_regression_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -3786,6 +3892,8 @@ mod event_emission_consistency_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4353,6 +4461,8 @@ mod slippage_bounds_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4581,6 +4691,8 @@ mod upgrade_safety_tests {
             lock_before_secs: 3_600,
             resolution_window: 86_400,
             tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -4961,6 +5073,9 @@ mod claim_refund_integrity_tests {
             fee_bps: 200,
             lock_before_secs: LOCK_BEFORE_SECS,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -5055,6 +5170,7 @@ mod claim_refund_integrity_tests {
             let stale = OracleReport {
                 match_id: match_id.clone(),
                 outcome: Outcome::FighterA,
+                outcome_version: 2,
                 reported_at: 0,
                 submitted_at: 0,
                 signature: soroban_sdk::BytesN::from_array(&env, &[0u8; 64]),
@@ -5064,6 +5180,7 @@ mod claim_refund_integrity_tests {
             let fresh = OracleReport {
                 match_id: match_id.clone(),
                 outcome: Outcome::FighterA,
+                outcome_version: 2,
                 reported_at: 300_000,
                 submitted_at: 300_000,
                 signature: soroban_sdk::BytesN::from_array(&env, &[0u8; 64]),
@@ -5199,6 +5316,9 @@ mod amm_slippage_tier8_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -6100,6 +6220,9 @@ mod oracle_two_of_three_tier8_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -6124,7 +6247,7 @@ mod oracle_two_of_three_tier8_tests {
     }
 
     /// Builds the canonical signed message exactly as the contract does:
-    /// concat(match_id XDR, outcome_byte, reported_at big-endian).
+    /// concat(match_id XDR, outcome byte, timestamp big-endian, version big-endian).
     fn sign_report(env: &Env, sk: &SigningKey, match_id: &soroban_sdk::String, outcome: &Outcome, reported_at: u64) -> BytesN<64> {
 
     fn sign_report(
@@ -6139,6 +6262,12 @@ mod oracle_two_of_three_tier8_tests {
         msg.append(&match_id.clone().to_xdr(env));
         msg.push_back(outcome_byte(outcome));
         for b in reported_at.to_be_bytes().iter() {
+            msg.push_back(*b);
+        }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
             msg.push_back(*b);
         }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
@@ -6156,6 +6285,7 @@ mod oracle_two_of_three_tier8_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(env, sk, &soroban_sdk::String::from_str(env, MATCH_ID), outcome, reported_at),
@@ -7060,6 +7190,9 @@ mod amm_slippage_tier10_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7392,7 +7525,7 @@ mod oracle_pending_reports_ttl_tests {
         assert_eq!(refund1, 50_000_000i128, "Bettor 1 must receive full 100% refund on cancelled market");
         assert_eq!(refund2, 50_000_000i128, "Bettor 2 must receive full 100% refund on cancelled market");
     }
-}
+    }
 
     fn data_bet_record(
         env: &Env,
@@ -7539,6 +7672,9 @@ mod oracle_two_of_three_tier10_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -7565,6 +7701,12 @@ mod oracle_two_of_three_tier10_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -7580,6 +7722,7 @@ mod oracle_two_of_three_tier10_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -7819,6 +7962,9 @@ mod amm_slippage_tier12_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8019,6 +8165,9 @@ mod oracle_two_of_three_tier12_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8045,6 +8194,12 @@ mod oracle_two_of_three_tier12_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -8060,6 +8215,7 @@ mod oracle_two_of_three_tier12_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -8277,6 +8433,9 @@ mod amm_slippage_tier14_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8485,6 +8644,9 @@ mod oracle_two_of_three_tier14_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
         }
     }
 
@@ -8511,6 +8673,12 @@ mod oracle_two_of_three_tier14_tests {
         for b in reported_at.to_be_bytes().iter() {
             msg.push_back(*b);
         }
+        for b in boxmeout_shared::types::CURRENT_OUTCOME_VERSION
+            .to_be_bytes()
+            .iter()
+        {
+            msg.push_back(*b);
+        }
         let raw: std::vec::Vec<u8> = msg.iter().collect();
         BytesN::from_array(env, &sk.sign(&raw).to_bytes())
     }
@@ -8526,6 +8694,7 @@ mod oracle_two_of_three_tier14_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, MATCH_ID),
             outcome: outcome.clone(),
+            outcome_version: 2,
             reported_at,
             submitted_at: env.ledger().timestamp(),
             signature: sign_report(
@@ -8764,6 +8933,7 @@ mod oracle_pending_reports_ttl_tiers_tests {
         OracleReport {
             match_id: soroban_sdk::String::from_str(env, "TTL-TEST-TIERS"),
             outcome: Outcome::FighterA,
+            outcome_version: 2,
             reported_at: submitted_at,
             submitted_at,
             signature: soroban_sdk::BytesN::from_array(env, &[0u8; 64]),
@@ -8824,5 +8994,128 @@ mod oracle_pending_reports_ttl_tiers_tests {
             stored.is_some(),
             "PENDING_REPORTS entry must be readable past TTL in soroban-env-test (TTL not enforced)"
         );
+    }
+}
+
+#[cfg(test)]
+mod amm_pool_tests {
+    use boxmeout_shared::types::{
+        BetSide, FightDetails, MarketConfig, MarketState, MarketStatus, OptionalMarketTier,
+        OptionalOracleRole, OptionalOutcome, Outcome,
+    };
+    use crate::Market;
+    use soroban_sdk::{
+        testutils::Address as _,
+        token::StellarAssetClient,
+        Address, Env, Vec,
+    };
+
+    #[test]
+    fn seeded_pool_trades_shares_and_settles_winning_position() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Market);
+        let client = crate::MarketClient::new(&env, &contract_id);
+        let token = env.register_stellar_asset_contract(Address::generate(&env));
+        let provider = Address::generate(&env);
+        let trader = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let fight = FightDetails {
+            match_id: soroban_sdk::String::from_str(&env, "AMM-TEST"),
+            fighter_a: soroban_sdk::String::from_str(&env, "A"),
+            fighter_b: soroban_sdk::String::from_str(&env, "B"),
+            weight_class: soroban_sdk::String::from_str(&env, "Test"),
+            scheduled_at: 100_000,
+            venue: soroban_sdk::String::from_str(&env, "Test"),
+            title_fight: false,
+        };
+        let config = MarketConfig {
+            min_bet_amount: 1_000_000,
+            max_bet: 100_000_000,
+            fee_bps: 200,
+            lock_before_secs: 3_600,
+            resolution_window: 86_400,
+            tier: 0,
+            dispute_cooldown_ledgers: 0,
+            token_decimals: 7,
+        };
+        let state = MarketState {
+            market_id: 1,
+            fight,
+            config,
+            status: MarketStatus::Open,
+            outcome: OptionalOutcome::None,
+            pool_a: 0,
+            pool_b: 0,
+            pool_draw: 0,
+            total_pool: 0,
+            resolved_at: 0,
+            oracle_used: OptionalOracleRole::None,
+            tier: OptionalMarketTier::None,
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &state);
+            env.storage().persistent().set(&"TREASURY", &treasury);
+            env.storage()
+                .persistent()
+                .set(&"BETTOR_LIST", &Vec::<Address>::new(&env));
+        });
+
+        StellarAssetClient::new(&env, &token).mint(&provider, &30_000_000);
+        let lp_position = client.add_liquidity(
+            &provider,
+            &10_000_000,
+            &10_000_000,
+            &10_000_000,
+            &token,
+            &30_000_000,
+        );
+        assert_eq!(lp_position.lp_shares, 30_000_000);
+        assert_eq!(
+            client.get_amm_pool(),
+            (10_000_000, 10_000_000, 10_000_000, 30_000_000, 0, 30_000_000)
+        );
+
+        StellarAssetClient::new(&env, &token).mint(&trader, &1_000_000);
+        let shares = client.buy_shares(
+            &trader,
+            &BetSide::FighterA,
+            &1_000_000,
+            &token,
+            &0,
+        );
+        let traded_pool = client.get_amm_pool();
+        assert!(traded_pool.0 < 10_000_000);
+        assert!(traded_pool.2 > 10_000_000);
+        assert_eq!(traded_pool.4, shares);
+        assert_eq!(client.get_amm_position(&trader).0, shares);
+
+        let sold_shares = shares / 2;
+        let amount_out = client.sell_shares(
+            &trader,
+            &BetSide::FighterA,
+            &sold_shares,
+            &token,
+            &0,
+        );
+        assert!(amount_out > 0);
+        assert_eq!(
+            client.get_amm_position(&trader).0,
+            shares - sold_shares
+        );
+
+        env.as_contract(&contract_id, || {
+            let mut state: MarketState = env.storage().persistent().get(&"STATE").unwrap();
+            state.status = MarketStatus::Resolved;
+            state.outcome = OptionalOutcome::Some(Outcome::FighterA);
+            env.storage().persistent().set(&"STATE", &state);
+        });
+        let payout = client.claim_amm_shares(&trader, &token);
+        assert!(payout > 0);
+        assert_eq!(client.get_amm_pool().4, 0);
+
+        let withdrawn = client.remove_liquidity(&provider, &lp_position.lp_shares, &token);
+        assert!(withdrawn > 0);
+        assert_eq!(client.get_amm_pool().3, 0);
     }
 }

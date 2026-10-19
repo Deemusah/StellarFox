@@ -8,7 +8,9 @@ pub mod errors;
 pub mod event_parser;
 pub mod events;
 pub mod math;
+pub mod outcome_version;
 pub mod types;
+pub use outcome_version::*;
 
 pub use amm::*;
 pub use errors::ContractError;

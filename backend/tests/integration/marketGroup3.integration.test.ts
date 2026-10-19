@@ -71,6 +71,32 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
       expect(res.body.data.pagination.total).toBe(2);
     });
 
+    it('filters by category hierarchy', async () => {
+      (pool.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+        .mockResolvedValueOnce({ rows: [{ market_id: 'm1', category: 'BOXING' }] });
+
+      const res = await request(app)
+        .get('/api/v2/markets')
+        .query({ category: 'COMBAT_SPORTS' });
+
+      expect(res.status).toBe(200);
+      expect(pool.query).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('category = ANY($1::text[])'),
+        [['BOXING', 'MMA', 'KICKBOXING', 'OTHER']],
+      );
+    });
+
+    it('rejects categories outside the defined hierarchy', async () => {
+      const res = await request(app)
+        .get('/api/v2/markets')
+        .query({ category: 'WRESTLING' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.errors).toBeDefined();
+    });
+
     it('rejects invalid status filter with 422', async () => {
       const res = await request(app)
         .get('/api/v2/markets')
@@ -175,8 +201,10 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
     const validMarketPayload = {
       fighter_a: 'Canelo Alvarez',
       fighter_b: 'Terence Crawford',
+      category: 'BOXING',
       weight_class: 'Super Middleweight',
       scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+      min_bet_amount: 1_000_000,
       fee_bps: 250,
       lock_before_secs: 1800,
     };
@@ -194,6 +222,7 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
       expect(res.body.data.market_id).toBe('mkt_new');
+      expect(res.body.data.category).toBe('BOXING');
     });
 
     it('rejects request without admin authorization token with 401', async () => {
@@ -219,6 +248,15 @@ describe('API Module Group 3: Market Discovery & Lifecycle Endpoints', () => {
         .post('/api/v2/markets')
         .set('Authorization', `Bearer ${validAdminToken}`)
         .send({ ...validMarketPayload, fee_bps: 1500 });
+
+      expect(res.status).toBe(422);
+    });
+
+    it('rejects min_bet_amount below 1 with 422', async () => {
+      const res = await request(app)
+        .post('/api/v2/markets')
+        .set('Authorization', `Bearer ${validAdminToken}`)
+        .send({ ...validMarketPayload, min_bet_amount: 0 });
 
       expect(res.status).toBe(422);
     });

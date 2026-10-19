@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CATEGORIES, MARKET_CATEGORY_FILTERS } from '../models/MarketCategory';
 
 export const marketStatusEnum = z.enum([
   'open',
@@ -10,7 +11,7 @@ export const marketStatusEnum = z.enum([
 
 export const listMarketsGroup3QuerySchema = z.object({
   status: marketStatusEnum.optional(),
-  category: z.string().trim().min(1).max(50).optional(),
+  category: z.enum(MARKET_CATEGORY_FILTERS).optional(),
   search: z.string().trim().min(1).max(100).optional(),
   minPool: z.coerce.number().min(0, 'minPool must be >= 0').optional(),
   maxPool: z.coerce.number().min(0, 'maxPool must be >= 0').optional(),
@@ -54,6 +55,10 @@ export const createMarketGroup3BodySchema = z.object({
     .trim()
     .min(2, 'fighter_b must be at least 2 characters')
     .max(100, 'fighter_b must not exceed 100 characters'),
+  category: z.enum(MARKET_CATEGORIES, {
+    required_error: 'category is required',
+    invalid_type_error: `category must be one of: ${MARKET_CATEGORIES.join(', ')}`,
+  }),
   weight_class: z
     .string({ required_error: 'weight_class is required' })
     .trim()

@@ -3,11 +3,7 @@ import { z } from 'zod';
 // --- Endpoint Group 21: User Activity & Preferences ---
 
 export const getUserActivityQuery = z.object({
-  userId: z.string().uuid().optional(),
-  action: z.enum([
-    'login', 'logout', 'bet_placed', 'bet_claimed',
-    'profile_updated', '2fa_enabled', '2fa_disabled',
-  ]).optional(),
+  action: z.enum(['bet_placed', 'bet_claimed']).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   page: z.coerce.number().int().min(1).default(1),
