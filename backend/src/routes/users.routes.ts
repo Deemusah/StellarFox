@@ -8,6 +8,8 @@ import { updateProfileBody } from '../schemas/validation.schemas.js';
 import { AuthenticatedRequest } from '../types/auth.types.js';
 import { UserRepository } from '../repositories/user.repository.js';
 import { rateLimit } from '../middleware/rate-limit.middleware.js';
+import { AppError } from '../utils/AppError.js';
+import { ERROR_CODES } from '../constants/errorCodes.js';
 
 const router = Router();
 const userRepository = new UserRepository();
@@ -18,17 +20,13 @@ const exportRateLimiter = rateLimit({ windowMs: 60_000, max: 5, keyBy: 'ip' });
  */
 async function rejectSuspended(
   req: AuthenticatedRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): Promise<void> {
   if (!req.user) return next();
   const user = await userRepository.findById(req.user.userId);
   if (user && !user.isActive) {
-    res.status(403).json({
-      success: false,
-      error: { code: 'ACCOUNT_SUSPENDED', message: 'Your account has been suspended' },
-    });
-    return;
+    return next(new AppError(403, 'Your account has been suspended', ERROR_CODES.FORBIDDEN));
   }
   next();
 }

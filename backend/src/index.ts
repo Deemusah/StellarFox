@@ -13,6 +13,7 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
+import { httpMetrics, slowRequestLogger, requestTimeout } from "./middleware/performance.middleware";
 import { requestIdMiddleware } from "./middleware/requestId.middleware";
 import { AppError } from "./utils/AppError";
 import { logger } from "./utils/logger";
@@ -49,6 +50,7 @@ import { startProbabilitySnapshotCron } from "./cron/probabilitySnapshot.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed, getActivityFeed, tryGetActivityFeed } from "./websocket/realtime";
 import { engagementService } from "./services/engagement.service";
+import { register } from "./services/metrics.service";
 import { exportMetrics, register, httpRequestDuration, httpRequestsTotal } from "./services/metrics.service";
 
 import { setDbAdapter, defaultDbAdapter } from "./services/MarketService";
@@ -73,6 +75,14 @@ app.use(pinoHttp({ logger, genReqId: (req) => (req as any).requestId }));
 app.use(express.json());
 app.use(requestLogging);
 
+// Performance monitoring — mount early so timers capture full handler duration.
+// httpMetrics:       Prometheus histogram + counter per route/method/status.
+// slowRequestLogger: Warns + increments slow-request counter when over threshold.
+// requestTimeout:    Returns 503 if a handler stalls beyond 30 s.
+app.use(httpMetrics);
+app.use(slowRequestLogger);
+app.use(requestTimeout(30_000));
+
 // Setup Swagger/OpenAPI documentation
 if (env.NODE_ENV === 'development' || env.ENABLE_SWAGGER) {
   setupSwagger(app);
@@ -94,18 +104,6 @@ app.get("/metrics/export", async (req, res) => {
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
-});
-
-// HTTP request metrics middleware
-app.use((req, res, next) => {
-  const end = httpRequestDuration.startTimer();
-  res.on("finish", () => {
-    const route = req.route?.path || req.path;
-    const labels = { method: req.method, route, status_code: String(res.statusCode) };
-    end(labels);
-    httpRequestsTotal.inc(labels);
-  });
-  next();
 });
 
 // Routes

@@ -16,6 +16,7 @@ import { rateLimit } from '../middleware/rate-limit.middleware';
 import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { buildPaginationMeta } from '../utils/pagination';
 
 const router = Router();
 
@@ -243,12 +244,7 @@ router.get(
         success: true,
         data: {
           bets: betsRes.rows,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit) || 1,
-          },
+          meta: buildPaginationMeta(total, page, limit),
         },
       });
     } catch (err) {
