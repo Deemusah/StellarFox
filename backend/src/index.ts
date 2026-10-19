@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import pinoHttp from "pino-http";
 import { validateEnv } from "./config/env";
 // Validate environment variables first before importing anything else that uses them!
@@ -43,6 +44,7 @@ const app = express();
 
 // CORS configuration - must be before other middleware
 app.use(createCorsMiddleware());
+app.use(compression());
 
 // Middleware
 app.use(pinoHttp({ logger }));
@@ -98,6 +100,7 @@ app.use("/auth", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" }));
 app.use("/api", rateLimit({ windowMs: 60_000, max: 60, keyBy: "ip" })); // Public endpoints
 app.use("/api/oracle", rateLimit({ windowMs: 60_000, max: 10, keyBy: "ip" })); // Oracle endpoint stricter
 app.use("/api/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" })); // Admin endpoints
+app.use("/api/v1/admin", rateLimit({ windowMs: 60_000, max: 20, keyBy: "ip" }));
 app.use("/trading", rateLimit({ windowMs: 60_000, max: 60, keyBy: "userId" }));
 app.use(
   "/wallet/withdraw",
@@ -114,6 +117,25 @@ app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/users", usersRouter);
 app.use("/api/admin", adminRouter);
+
+// Versioned API routes. The unversioned routes above remain available for
+// existing clients and retain their current response contracts.
+const apiV1Router = express.Router();
+apiV1Router.use((_req, res, next) => {
+  res.setHeader("X-API-Version", "1");
+  next();
+});
+apiV1Router.use("/markets", marketRouter);
+apiV1Router.use("/governance", governanceRouter);
+apiV1Router.use("/engagement", engagementRouter);
+apiV1Router.use("/claims", claimsRouter);
+apiV1Router.use("/bets", claimsRouter);
+apiV1Router.get("/stats", getPlatformStats);
+apiV1Router.get("/portfolio/:address", getPortfolio);
+apiV1Router.use("/users", usersRouter);
+apiV1Router.use("/admin", adminRouter);
+app.use("/api/v1", apiV1Router);
+
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));
 

@@ -2,7 +2,10 @@ openapi: 3.0.3
 info:
   title: BANKERCHANGER API
   version: 0.2.0
-  description: REST API for the BANKERCHANGER decentralized boxing prediction market.
+  description: >-
+    REST API for the BANKERCHANGER decentralized boxing prediction market.
+    Stable v1 routes are available under /api/v1; existing /api routes remain
+    backward-compatible aliases. Versioned responses include X-API-Version: 1.
 
 servers:
   - url: http://localhost:3001

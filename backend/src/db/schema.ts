@@ -40,6 +40,8 @@ export const markets = pgTable(
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
     updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
     ledger_sequence: integer('ledger_sequence').default(0),
+    deleted_at: timestamp('deleted_at', { withTimezone: true }),
+    deleted_by: text('deleted_by'),
   },
   (table) => ({
     market_id_idx: uniqueIndex('markets_market_id_idx').on(table.market_id),
