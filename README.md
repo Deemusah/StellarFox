@@ -217,6 +217,8 @@ Automated tests for the provisioning and renewal configuration live in `k8s/cert
 - [Observability Guide](docs/observability.md) — Prometheus metric names, alerting, logging
 - [Backend Autoscaling](docs/autoscaling.md) — Kubernetes deployment, HPA thresholds, and load tests
 - [Operational Runbook](docs/runbook.md) — Incident response procedures for production
+- [Deployment Guide](docs/deployment-guide.md) — Instructions for deploying with Docker Compose
+- [Troubleshooting Guide](docs/troubleshooting-guide.md) — Common issues and resolution steps
 
 ## License
 
