@@ -12,6 +12,7 @@ import { pool } from '../config/db';
 import * as cache from './cache.service';
 import * as StellarService from './StellarService';
 import { AppError } from '../utils/AppError';
+import { getMarketUpdatePublisher } from './marketUpdatePublisher.service';
 
 function buildMarketWhere(filters?: MarketFilters): { whereSql: string; values: unknown[] } {
   const whereClauses: string[] = [];
@@ -94,36 +95,8 @@ export interface DbAdapter {
 export const defaultDbAdapter: DbAdapter = {
   async findMarkets(filters?: MarketFilters): Promise<Market[]> {
     const { whereSql, values } = buildMarketWhere(filters);
-    const whereClauses: string[] = [];
-    const values: unknown[] = [];
 
-    if (filters?.status) {
-      values.push(filters.status);
-      whereClauses.push(`status = $${values.length}`);
-    }
-    if (filters?.weight_class) {
-      values.push(filters.weight_class);
-      whereClauses.push(`weight_class = $${values.length}`);
-    }
-    if (filters?.category) {
-      values.push(getMarketCategoryDescendants(filters.category));
-      whereClauses.push(`category = ANY($${values.length}::text[])`);
-    }
-    if (filters?.fighter) {
-      values.push(`%${filters.fighter}%`);
-      whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
-    }
-    if (filters?.dateFrom) {
-      values.push(filters.dateFrom);
-      whereClauses.push(`scheduled_at >= $${values.length}`);
-    }
-    if (filters?.dateTo) {
-      values.push(filters.dateTo);
-      whereClauses.push(`scheduled_at <= $${values.length}`);
-    }
-
-    whereClauses.unshift('deleted_at IS NULL');
-    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
+    whereSql.replace('WHERE ', 'WHERE deleted_at IS NULL AND ');
     const orderBySql =
       filters?.sort === 'date_asc' ? 'ORDER BY scheduled_at ASC' :
       filters?.sort === 'pool_desc' ? 'ORDER BY total_pool DESC' :
@@ -224,6 +197,7 @@ export { db };
 /**
  * Updates a market's status after validating the state transition.
  * Reads the current status from the DB, validates, then applies the update.
+ * Publishes a real-time update to WebSocket subscribers.
  */
 export async function updateMarketStatus(market_id: string, newStatus: string): Promise<void> {
   const market = await db().findMarketById(market_id);
@@ -231,6 +205,10 @@ export async function updateMarketStatus(market_id: string, newStatus: string): 
   validateStatusTransition(market.status, newStatus);
   await db().updateMarketStatus(market_id, newStatus);
   await invalidateMarketCache(market_id);
+
+  // Publish real-time update to WebSocket subscribers
+  const publisher = getMarketUpdatePublisher();
+  publisher.publishStatusChange(market_id, market.status, newStatus);
 }
 
 export async function softDeleteMarket(market_id: string, deleted_by = 'system'): Promise<void> {
@@ -244,7 +222,6 @@ export async function softDeleteMarket(market_id: string, deleted_by = 'system')
 
 export interface MarketFilters {
   status?: string;
-  category?: string;
   category?: MarketCategoryFilter;
   weight_class?: string;
   search?: string;
@@ -432,7 +409,6 @@ export async function getMarkets(
   const statusKey = filters?.status ?? '';
   const categoryKey = filters?.category ?? filters?.weight_class ?? '';
   const searchKey = filters?.search?.trim() ?? '';
-  const categoryKey = filters?.category ?? '';
   const weightKey = filters?.weight_class ?? '';
   const fighterKey = filters?.fighter ?? '';
   const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
@@ -440,18 +416,7 @@ export async function getMarkets(
   const sortKey = filters?.sort ?? 'date_desc';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${JSON.stringify({
-    status: statusKey,
-    category: categoryKey,
-    search: searchKey,
-    fighter: fighterKey,
-    dateFrom: dateFromKey,
-    dateTo: dateToKey,
-    sort: sortKey,
-    page,
-    limit,
-  })}`;
-  const cacheKey = `markets:${statusKey}:${categoryKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
+  const cacheKey = `markets:${statusKey}:${categoryKey}:${weightKey}:${searchKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${sortKey}:${page}:${limit}`;
   const cached = await cache.get<MarketListResult>(cacheKey);
   if (cached) return cached;
 
