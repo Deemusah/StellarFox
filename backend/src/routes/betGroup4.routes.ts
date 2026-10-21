@@ -17,6 +17,7 @@ import { AppError } from '../utils/AppError';
 import { pool } from '../config/db';
 import { ERROR_CODES } from '../constants/errorCodes';
 import { buildPaginationMeta } from '../utils/pagination';
+import { getMarketUpdatePublisher } from '../services/marketUpdatePublisher.service';
 
 const router = Router();
 
@@ -139,6 +140,21 @@ router.post(
       );
 
       await client.query('COMMIT');
+
+      // Publish real-time market update to WebSocket subscribers
+      const publisher = getMarketUpdatePublisher();
+      const newSidePool = String(BigInt(market[sidePoolCol] ?? '0') + betAmountBig);
+      const newTotalPool = String(BigInt(market.total_pool ?? '0') + betAmountBig);
+      const updateData: Record<string, unknown> = {
+        [sidePoolCol]: newSidePool,
+        total_pool: newTotalPool,
+        volume: Number(newTotalPool) / 10_000_000,
+        num_bets: (market.num_bets ?? 0) + 1,
+      };
+      publisher.publishPoolUpdate(market_id, {
+        [`pool_${side === 'fighter_a' ? 'a' : side === 'fighter_b' ? 'b' : 'draw'}`]: Number(newSidePool),
+      });
+      publisher.publishUpdate(market_id, 'volume_updated', updateData);
 
       res.status(201).json({
         success: true,
